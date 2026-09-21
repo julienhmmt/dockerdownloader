@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -34,6 +35,20 @@ func safeBundleName(s string) string {
 		return "unknown"
 	}
 	return s
+}
+
+// buildTime returns the timestamp to stamp into the bundle and whether it is
+// the fixed SOURCE_DATE_EPOCH value. With SOURCE_DATE_EPOCH set (Unix seconds,
+// the reproducible-builds convention) identical inputs yield byte-identical
+// bundles; otherwise the current time is used and default behaviour is
+// unchanged. A malformed value falls back to the current time.
+func buildTime() (time.Time, bool) {
+	if raw := os.Getenv("SOURCE_DATE_EPOCH"); raw != "" {
+		if secs, err := strconv.ParseInt(raw, 10, 64); err == nil {
+			return time.Unix(secs, 0).UTC(), true
+		}
+	}
+	return time.Now(), false
 }
 
 // ImageEntry pairs an image tarball on disk with the retagged reference it
@@ -114,9 +129,16 @@ func Create(spec Spec) (path string, err error) {
 	// sha256sum -c format). load.sh is included.
 	var checksums sums
 	var manifest strings.Builder
+	now, reproducible := buildTime()
+	// A fixed ModTime on file headers is what makes the archive reproducible;
+	// without SOURCE_DATE_EPOCH each file keeps its own mtime (unchanged).
+	var fileModTime time.Time
+	if reproducible {
+		fileModTime = now
+	}
 	for _, image := range spec.Images {
 		name := "images/" + filepath.Base(image.TarPath)
-		sum, err := writeFileFromDisk(tarWriter, image.TarPath, name)
+		sum, err := writeFileFromDisk(tarWriter, image.TarPath, name, fileModTime)
 		if err != nil {
 			return "", err
 		}
@@ -132,7 +154,6 @@ func Create(spec Spec) (path string, err error) {
 		return "", err
 	}
 	checksums.add(sum, "images.txt")
-	now := time.Now()
 	prov, err := buildProvenance(spec, ext, now)
 	if err != nil {
 		return "", fmt.Errorf("build provenance: %w", err)
@@ -256,8 +277,9 @@ func shellQuote(s string) string {
 }
 
 // writeFileFromDisk copies the file at srcPath into the archive under name and
-// returns the hex-encoded sha256 of its contents.
-func writeFileFromDisk(tarWriter *tar.Writer, srcPath, name string) (string, error) {
+// returns the hex-encoded sha256 of its contents. A non-zero modTime overrides
+// the file's own mtime, so a reproducible build stamps every entry identically.
+func writeFileFromDisk(tarWriter *tar.Writer, srcPath, name string, modTime time.Time) (string, error) {
 	file, err := os.Open(srcPath)
 	if err != nil {
 		return "", err
@@ -269,11 +291,14 @@ func writeFileFromDisk(tarWriter *tar.Writer, srcPath, name string) (string, err
 	if err != nil {
 		return "", err
 	}
+	if modTime.IsZero() {
+		modTime = info.ModTime()
+	}
 	header := &tar.Header{
 		Name:    name,
 		Mode:    0o644,
 		Size:    info.Size(),
-		ModTime: info.ModTime(),
+		ModTime: modTime,
 	}
 	if err := tarWriter.WriteHeader(header); err != nil {
 		return "", err

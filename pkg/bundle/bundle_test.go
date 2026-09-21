@@ -270,3 +270,24 @@ func TestShellQuote_EscapesSingleQuotes(t *testing.T) {
 	assert.Equal(t, `'plain'`, shellQuote("plain"))
 	assert.Equal(t, `'a'\''b'`, shellQuote("a'b"))
 }
+
+// TestCreate_ReproducibleWithSourceDateEpoch pins SOURCE_DATE_EPOCH: two builds
+// from identical inputs must produce byte-identical archives.
+func TestCreate_ReproducibleWithSourceDateEpoch(t *testing.T) {
+	t.Setenv("SOURCE_DATE_EPOCH", "1700000000")
+	build := func() []byte {
+		work := t.TempDir()
+		out := t.TempDir()
+		img := writeTemp(t, work, "i.tar", "tar-bytes")
+		path, err := Create(Spec{
+			Name:      "c",
+			OutputDir: out,
+			Images:    []ImageEntry{{TarPath: img, SourceRef: "x:1", DestRef: "r/x:1", Digest: "sha256:abc"}},
+		})
+		require.NoError(t, err)
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		return data
+	}
+	assert.Equal(t, build(), build(), "identical inputs must yield identical bundles")
+}

@@ -152,6 +152,10 @@ The ones that matter most:
 | `work_dir` | `""` | Fixed path enables `resume` and keeps tarballs between runs; purge cached tarballs in the TUI with `p`. |
 | `resume` | `false` | Reuse tarballs from a prior run instead of re-pulling. Reuse is keyed on source ref, destination, and platform; changing `registry_prefix` or `platform` re-pulls. |
 
+Set `SOURCE_DATE_EPOCH` (Unix seconds) to make bundles reproducible: identical
+inputs then produce byte-identical archives, so a bundle can be content-addressed
+or compared by hash across builds. Unset, the current time is used as before.
+
 ## Development
 
 ```sh
