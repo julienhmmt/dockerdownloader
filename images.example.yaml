@@ -1,0 +1,22 @@
+# Example image list for dockerdownloader.
+#
+#   dockerdownloader                              # TUI, reads images_file from config
+#   dockerdownloader batch images.yaml            # headless, all settings from config
+#   dockerdownloader -images images.yaml          # TUI with an explicit list
+#
+# Every other setting (registry prefix, output dir, platform, concurrency,
+# compression, proxy, resume, …) is read from the config file; see
+# config.example.yaml.
+#
+# References are validated before anything is pulled: an entry that is not a
+# parseable image reference aborts the run. Docker Hub shorthand is expanded
+# for you ("redis:7" → docker.io/library/redis:7), and duplicate entries (by
+# canonical reference) are collapsed.
+images:
+  - nginx:1.27
+  - quay.io/argoproj/argocd:v3.2.6
+  - docker.io/library/redis:7.2
+  # Digest-pinned references are accepted. Note the destination is always a
+  # tag, because a docker-archive tarball cannot be tagged by digest: this
+  # mirrors to <prefix>/docker.io/library/postgres:latest.
+  - docker.io/library/postgres@sha256:6c3c624b58dbbcd3c0dd82b4c53f04194d1247c6eebdaab7c610cf7d66709b3b

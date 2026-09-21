@@ -1,0 +1,310 @@
+// Package bundle assembles retagged image tarballs into a single compressed
+// archive ready for transfer to airgapped infrastructure.
+package bundle
+
+import (
+	"archive/tar"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"time"
+)
+
+// unsafeNameChars matches characters disallowed in a safe bundle filename.
+// Note it intentionally KEEPS "." so version strings like "1.0.0" stay
+// readable in the filename; traversal ("..") is neutralized separately in
+// safeBundleName, because keeping "." means the regex alone would let ".."
+// survive.
+var unsafeNameChars = regexp.MustCompile(`[^a-zA-Z0-9_.-]+`)
+
+// safeBundleName makes a bundle name safe as a single filename component: it
+// first collapses any ".." traversal sequence to "_", then replaces path
+// separators and other unsafe characters with "_". Both steps are required —
+// the regex keeps "." (for readable version numbers), so the explicit ".."
+// pass is what prevents escaping OutputDir via filepath.Join.
+func safeBundleName(s string) string {
+	s = strings.ReplaceAll(s, "..", "_")
+	s = strings.Trim(unsafeNameChars.ReplaceAllString(s, "_"), "_")
+	if s == "" {
+		return "unknown"
+	}
+	return s
+}
+
+// ImageEntry pairs an image tarball on disk with the retagged reference it
+// contains.
+type ImageEntry struct {
+	// TarPath is the path to the saved image archive.
+	TarPath string
+	// SourceRef is the original image reference.
+	SourceRef string
+	// DestRef is the retagged reference baked into the tarball.
+	DestRef string
+	// Digest is the resolved manifest digest of the pulled image
+	// (e.g. "sha256:..."), empty when the registry did not report one.
+	Digest string
+}
+
+// Spec describes the contents of a bundle.
+type Spec struct {
+	// Name names the output archive: "<name>-bundle.tar.<ext>".
+	Name string
+	// Platform is the OS/arch the images were pulled for, recorded for
+	// provenance so the airgapped side can tell what it received.
+	Platform string
+	// Images are the saved image tarballs to embed. At least one is required:
+	// a bundle with no images has nothing to load or push.
+	Images []ImageEntry
+	// OutputDir is where the bundle archive is written.
+	OutputDir string
+	// Compression selects the archive codec: "gzip" (default, .tar.gz) or
+	// "zstd" (.tar.zst), which gives a smaller bundle for airgap transfer.
+	Compression string
+}
+
+// Create writes the bundle archive and returns its path. The archive contains:
+//
+//	images/<name>.tar      one tarball per image, retagged
+//	images.txt             source -> dest reference manifest
+//	manifest.json          provenance: tool, codec, platform, images + digests
+//	sbom.spdx.json         SPDX 2.3 document, one package per image
+//	sha256sums.txt         sha256 of every bundled file (sha256sum -c format)
+//	load.sh                script to load and push every image
+func Create(spec Spec) (path string, err error) {
+	if len(spec.Images) == 0 {
+		return "", fmt.Errorf("no images to bundle")
+	}
+	if err = os.MkdirAll(spec.OutputDir, 0o755); err != nil {
+		return "", err
+	}
+	codec, ext, err := compressorFor(spec.Compression)
+	if err != nil {
+		return "", err
+	}
+	outName := fmt.Sprintf("%s-bundle.tar.%s", safeBundleName(spec.Name), ext)
+	outPath := filepath.Join(spec.OutputDir, outName)
+	out, err := os.Create(outPath)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		_ = out.Close()
+		if err != nil {
+			_ = os.Remove(outPath)
+		}
+	}()
+	compWriter, err := codec(out)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		_ = compWriter.Close()
+	}()
+	tarWriter := tar.NewWriter(compWriter)
+	defer func() {
+		_ = tarWriter.Close()
+	}()
+	// checksums accumulates "<sha256>  <name>" lines (sha256sum -c format) for
+	// every bundled file except sha256sums.txt itself (cannot self-hash in
+	// sha256sum -c format). load.sh is included.
+	var checksums sums
+	var manifest strings.Builder
+	for _, image := range spec.Images {
+		name := "images/" + filepath.Base(image.TarPath)
+		sum, err := writeFileFromDisk(tarWriter, image.TarPath, name)
+		if err != nil {
+			return "", err
+		}
+		checksums.add(sum, name)
+		digest := image.Digest
+		if digest == "" {
+			digest = "-"
+		}
+		fmt.Fprintf(&manifest, "%s\t%s\t%s\t%s\n", image.SourceRef, image.DestRef, name, digest)
+	}
+	sum, err := writeBytes(tarWriter, "images.txt", []byte(manifest.String()))
+	if err != nil {
+		return "", err
+	}
+	checksums.add(sum, "images.txt")
+	now := time.Now()
+	prov, err := buildProvenance(spec, ext, now)
+	if err != nil {
+		return "", fmt.Errorf("build provenance: %w", err)
+	}
+	if sum, err = writeBytes(tarWriter, "manifest.json", prov); err != nil {
+		return "", err
+	}
+	checksums.add(sum, "manifest.json")
+	sbom, err := buildSBOM(spec, now)
+	if err != nil {
+		return "", fmt.Errorf("build sbom: %w", err)
+	}
+	if sum, err = writeBytes(tarWriter, "sbom.spdx.json", sbom); err != nil {
+		return "", err
+	}
+	checksums.add(sum, "sbom.spdx.json")
+	// load.sh must be written and hashed before sha256sums.txt so the sums file
+	// covers the only executable path on the airgapped host.
+	script := []byte(buildLoadScript(spec.Images))
+	if sum, err = writeBytesMode(tarWriter, "load.sh", script, 0o755); err != nil {
+		return "", err
+	}
+	checksums.add(sum, "load.sh")
+	if _, err = writeBytes(tarWriter, "sha256sums.txt", []byte(checksums.String())); err != nil {
+		return "", err
+	}
+	// Close the writer stack explicitly, innermost first, so a flush failure
+	// (e.g. disk full while the compressor drains its buffer) surfaces as an
+	// error instead of leaving a truncated bundle reported as success. The
+	// deferred closes above remain a safety net for early-return paths and are
+	// harmless no-ops once these succeed; the deferred remove fires if err is set.
+	if err = tarWriter.Close(); err != nil {
+		return "", fmt.Errorf("finalize tar: %w", err)
+	}
+	if err = compWriter.Close(); err != nil {
+		return "", fmt.Errorf("finalize compression: %w", err)
+	}
+	if err = out.Close(); err != nil {
+		return "", fmt.Errorf("finalize bundle file: %w", err)
+	}
+	return outPath, nil
+}
+
+// sums accumulates checksum lines in the "sha256sum -c" format:
+// "<hex>  <relative-name>" (two spaces).
+type sums struct {
+	b strings.Builder
+}
+
+func (s *sums) add(hexSum, name string) {
+	fmt.Fprintf(&s.b, "%s  %s\n", hexSum, name)
+}
+
+func (s *sums) String() string {
+	return s.b.String()
+}
+
+// buildLoadScript returns a POSIX shell script that loads each bundled image
+// tarball into a container engine and pushes it to its retagged reference. The
+// engine defaults to docker and can be overridden with the ENGINE environment
+// variable (e.g. ENGINE=podman ./load.sh). Set DRY_RUN=1 to print the load and
+// push commands without executing them. The script is idempotent: an image
+// already present locally is not re-loaded.
+func buildLoadScript(images []ImageEntry) string {
+	var b strings.Builder
+	b.WriteString("#!/bin/sh\n")
+	b.WriteString("# Auto-generated by dockerdownloader.\n")
+	b.WriteString("# Loads every bundled image and pushes it to the target registry.\n")
+	b.WriteString("# Requires docker, or set ENGINE=podman. Set DRY_RUN=1 to preview.\n")
+	b.WriteString("set -eu\n\n")
+	b.WriteString(`ENGINE="${ENGINE:-docker}"` + "\n")
+	b.WriteString(`DRY_RUN="${DRY_RUN:-}"` + "\n")
+	b.WriteString(`DIR="$(cd "$(dirname "$0")" && pwd)"` + "\n\n")
+	// run executes a command, or just prints it under DRY_RUN.
+	b.WriteString("run() {\n")
+	b.WriteString(`  if [ -n "$DRY_RUN" ]; then echo "DRY_RUN: $*"; else "$@"; fi` + "\n")
+	b.WriteString("}\n\n")
+	// Verify file integrity before touching the registry. Fail closed when the
+	// checksum manifest is absent or no checksum tool is available: silently
+	// skipping verification would let a bundle with a stripped sha256sums.txt
+	// load unverified images, which is exactly the downgrade an attacker wants.
+	b.WriteString("if [ ! -f \"$DIR/sha256sums.txt\" ]; then\n")
+	b.WriteString(`  echo ">> missing sha256sums.txt; refuse to load without integrity check" >&2` + "\n")
+	b.WriteString("  exit 1\n")
+	b.WriteString("fi\n")
+	b.WriteString("if command -v sha256sum >/dev/null 2>&1; then\n")
+	b.WriteString(`  echo ">> verifying checksums"` + "\n")
+	b.WriteString(`  (cd "$DIR" && sha256sum -c sha256sums.txt)` + "\n")
+	b.WriteString("elif command -v shasum >/dev/null 2>&1; then\n")
+	b.WriteString(`  echo ">> verifying checksums"` + "\n")
+	b.WriteString(`  (cd "$DIR" && shasum -a 256 -c sha256sums.txt)` + "\n")
+	b.WriteString("else\n")
+	b.WriteString(`  echo ">> no sha256sum/shasum found; refuse to load without integrity check" >&2` + "\n")
+	b.WriteString("  exit 1\n")
+	b.WriteString("fi\n\n")
+	b.WriteString("load_and_push() {\n")
+	b.WriteString(`  if [ -z "$DRY_RUN" ] && "$ENGINE" image inspect "$2" >/dev/null 2>&1; then` + "\n")
+	b.WriteString(`    echo ">> $2 already present, skipping load"` + "\n")
+	b.WriteString("  else\n")
+	b.WriteString(`    echo ">> loading $1"` + "\n")
+	b.WriteString(`    run "$ENGINE" load -i "$DIR/$1"` + "\n")
+	b.WriteString("  fi\n")
+	b.WriteString(`  echo ">> pushing $2"` + "\n")
+	b.WriteString(`  run "$ENGINE" push "$2"` + "\n")
+	b.WriteString("}\n\n")
+	for _, image := range images {
+		name := "images/" + filepath.Base(image.TarPath)
+		if image.Digest != "" {
+			fmt.Fprintf(&b, "# %s\n", image.Digest)
+		}
+		fmt.Fprintf(&b, "load_and_push %s %s\n", shellQuote(name), shellQuote(image.DestRef))
+	}
+	fmt.Fprintf(&b, "\necho \"done: loaded and pushed %d image(s)\"\n", len(images))
+	return b.String()
+}
+
+// shellQuote wraps s in single quotes, escaping any embedded single quotes, so
+// it is safe to interpolate into the generated shell script.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// writeFileFromDisk copies the file at srcPath into the archive under name and
+// returns the hex-encoded sha256 of its contents.
+func writeFileFromDisk(tarWriter *tar.Writer, srcPath, name string) (string, error) {
+	file, err := os.Open(srcPath)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		_ = file.Close()
+	}()
+	info, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	header := &tar.Header{
+		Name:    name,
+		Mode:    0o644,
+		Size:    info.Size(),
+		ModTime: info.ModTime(),
+	}
+	if err := tarWriter.WriteHeader(header); err != nil {
+		return "", err
+	}
+	hasher := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(tarWriter, hasher), file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+// writeBytes writes an in-memory file into the archive under name with the
+// default 0o644 mode, returning the hex-encoded sha256 of data.
+func writeBytes(tarWriter *tar.Writer, name string, data []byte) (string, error) {
+	return writeBytesMode(tarWriter, name, data, 0o644)
+}
+
+// writeBytesMode writes an in-memory file into the archive under name with the
+// given file mode, returning the hex-encoded sha256 of data.
+func writeBytesMode(tarWriter *tar.Writer, name string, data []byte, mode int64) (string, error) {
+	header := &tar.Header{
+		Name: name,
+		Mode: mode,
+		Size: int64(len(data)),
+	}
+	if err := tarWriter.WriteHeader(header); err != nil {
+		return "", err
+	}
+	if _, err := tarWriter.Write(data); err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}

@@ -1,0 +1,389 @@
+// Command dockerdownloader is a TUI for downloading a list of container images
+// and bundling them for airgapped infrastructure.
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"os"
+
+	"github.com/julienhmmt/dockerdownloader/internal/tui"
+	"github.com/julienhmmt/dockerdownloader/pkg/bundle"
+	"github.com/julienhmmt/dockerdownloader/pkg/config"
+	"github.com/julienhmmt/dockerdownloader/pkg/imagelist"
+	"github.com/julienhmmt/dockerdownloader/pkg/log"
+	"github.com/julienhmmt/dockerdownloader/pkg/pipeline"
+	"github.com/julienhmmt/dockerdownloader/pkg/version"
+)
+
+func main() {
+	if len(os.Args) >= 2 {
+		switch os.Args[1] {
+		case "verify":
+			runVerify(os.Args[2:])
+			return
+		case "diff":
+			runDiff(os.Args[2:])
+			return
+		case "batch":
+			runBatch(os.Args[2:])
+			return
+		case "version", "-version", "--version":
+			fmt.Println(version.String())
+			return
+		}
+	}
+	configPath := flag.String("config", config.DefaultPath(), "path to config file")
+	imagesPath := flag.String("images", "", "override the image list file (default: images_file from config)")
+	outputDir := flag.String("output", "", "override output directory for bundles")
+	bundleName := flag.String("name", "", "override the bundle name (output file <name>-bundle.tar.gz)")
+	workDir := flag.String("work-dir", "", "override work directory for intermediate files (image tarballs)")
+	tempDir := flag.String("temp-dir", "", "override the parent directory for temporary work dirs (default: system temp dir, e.g. /tmp)")
+	concurrency := flag.Int("concurrency", 0, "override max parallel image downloads (default 4)")
+	retries := flag.Int("retries", -1, "override retry attempts per failed image pull (default 2)")
+	prefix := flag.String("registry-prefix", "", "override the private registry prefix")
+	platform := flag.String("platform", "", "override the image platform (e.g. linux/amd64)")
+	resume := flag.Bool("resume", false, "reuse image tarballs already present in a persistent work dir")
+	registryAuth := flag.Bool("registry-auth", false, "enable authenticated pulls from private registries using the default Docker keychain ($DOCKER_CONFIG or ~/.docker/config.json)")
+	compression := flag.String("compression", "", "bundle compression: gzip (default) or zstd")
+	minFreeDiskMB := flag.Int("min-free-mb", -1, "minimum free disk space in MiB before download (0 disables)")
+	proxy := flag.String("proxy", "", "override proxy URL (e.g. http://proxy.domain.local:3128)")
+	verbose := flag.Bool("v", false, "enable verbose logging (shortcut for --log-level=debug)")
+	logLevel := flag.String("log-level", "", "set log level: silent, info, or debug (default: info)")
+	logFile := flag.String("log-file", "dockerdownloader.log", "path for log output")
+	theme := flag.String("theme", "", "TUI theme: auto (default, follow terminal), light, dark, high-contrast, ocean, or matrix")
+	flag.Parse()
+
+	cfg, err := loadConfig(flag.CommandLine, *configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to load config: %v\n", err)
+		os.Exit(1)
+	}
+	if *imagesPath != "" {
+		cfg.ImagesFile = *imagesPath
+	}
+	if *outputDir != "" {
+		cfg.OutputDir = *outputDir
+	}
+	if *bundleName != "" {
+		cfg.BundleName = *bundleName
+	}
+	if *workDir != "" {
+		cfg.WorkDir = *workDir
+	}
+	if *tempDir != "" {
+		cfg.TempDir = *tempDir
+	}
+	cfg, err = resolveWorkDir(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	if *concurrency > 0 {
+		cfg.Concurrency = *concurrency
+	}
+	if *retries >= 0 {
+		cfg.Retries = *retries
+	}
+	if *prefix != "" {
+		cfg.RegistryPrefix = *prefix
+	}
+	if *platform != "" {
+		cfg.Platform = *platform
+	}
+	if *resume {
+		cfg.Resume = true
+	}
+	if *registryAuth {
+		cfg.RegistryAuth = true
+	}
+	if *compression != "" {
+		cfg.Compression = *compression
+	}
+	if *minFreeDiskMB >= 0 {
+		cfg.MinFreeDiskMB = *minFreeDiskMB
+	}
+	if *proxy != "" {
+		cfg.HTTPSProxy = *proxy
+	}
+	cfg = applyProxyEnv(cfg)
+	if *verbose {
+		cfg.Verbose = true
+		cfg.LogLevel = "debug"
+	}
+	if *logLevel != "" {
+		cfg.LogLevel = *logLevel
+		cfg.Verbose = true
+	}
+	if cfg.LogFile == "" {
+		cfg.LogFile = *logFile
+	}
+	if *theme != "" {
+		cfg.Theme = *theme
+	}
+	cfg.Theme = config.NormalizeTheme(cfg.Theme)
+
+	if err := bundle.ValidateCompression(cfg.Compression); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	if err := config.ValidateTheme(cfg.Theme); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	logger := createLogger(cfg)
+
+	// Preflight the image list before opening the TUI: an invalid list must fail
+	// with a clear message rather than surface after the user commits to a
+	// download. Same fail-closed check the batch path uses.
+	imgs, err := loadImages(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := tui.Run(cfg, logger, imgs); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// loadImages reads and validates the configured image list, including the
+// check that no two entries retag to the same destination reference.
+func loadImages(cfg config.Config) ([]imagelist.Image, error) {
+	imgs, err := imagelist.Load(cfg.ImagesFile)
+	if err != nil {
+		return nil, err
+	}
+	if err := imagelist.ValidateDest(imgs, cfg.RegistryPrefix); err != nil {
+		return nil, err
+	}
+	return imgs, nil
+}
+
+// loadConfig loads the config at path. When -config was explicitly passed on
+// fs, a missing file is an error (a typo'd path must not silently fall back to
+// defaults); otherwise the default-path probe tolerates a missing file.
+func loadConfig(fs *flag.FlagSet, path string) (config.Config, error) {
+	explicit := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "config" {
+			explicit = true
+		}
+	})
+	if explicit {
+		return config.LoadRequired(path)
+	}
+	return config.Load(path)
+}
+
+// applyProxyEnv fills cfg.HTTPSProxy from HTTP_PROXY/HTTPS_PROXY when it was not
+// set via CLI or config, returning the updated copy.
+func applyProxyEnv(cfg config.Config) config.Config {
+	if cfg.HTTPSProxy != "" {
+		return cfg
+	}
+	if envProxy := os.Getenv("HTTP_PROXY"); envProxy != "" {
+		cfg.HTTPSProxy = envProxy
+	} else if envProxy := os.Getenv("HTTPS_PROXY"); envProxy != "" {
+		cfg.HTTPSProxy = envProxy
+	}
+	return cfg
+}
+
+// resolveWorkDir validates the configured work dir (creating it if needed), or,
+// when none is set, resolves a writable base for temporary work dirs — the same
+// preflight the interactive path uses, so batch behaves identically. Any
+// fallback warning is printed to stderr; the updated copy is returned.
+func resolveWorkDir(cfg config.Config) (config.Config, error) {
+	if cfg.WorkDir != "" {
+		if err := config.EnsureWritableDir(cfg.WorkDir); err != nil {
+			return cfg, fmt.Errorf("work dir is not usable: %w", err)
+		}
+		return cfg, nil
+	}
+	resolvedTemp, warn, err := config.FindWritableTempDir(cfg.TempDir)
+	if err != nil {
+		return cfg, err
+	}
+	if warn != "" {
+		fmt.Fprintln(os.Stderr, warn)
+	}
+	cfg.TempDir = resolvedTemp
+	return cfg, nil
+}
+
+// runBatch runs the batch subcommand: `dockerdownloader batch [-config path] <images.yaml>`.
+// It downloads every image in the YAML list headlessly. All settings other than
+// the config path and the list path come from the config file (registry prefix,
+// output dir, etc.).
+func runBatch(args []string) {
+	fs := flag.NewFlagSet("batch", flag.ExitOnError)
+	configPath := fs.String("config", config.DefaultPath(), "path to config file")
+	if err := fs.Parse(args); err != nil {
+		os.Exit(2)
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: dockerdownloader batch [-config path] <images.yaml>")
+		os.Exit(2)
+	}
+
+	cfg, err := loadConfig(fs, *configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to load config: %v\n", err)
+		os.Exit(1)
+	}
+	cfg.ImagesFile = rest[0]
+	cfg = applyProxyEnv(cfg)
+	if err := bundle.ValidateCompression(cfg.Compression); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	cfg, err = resolveWorkDir(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	// Fail fast before downloading anything: an unwritable output dir would
+	// otherwise sink the whole run at bundle time, after the pulls are done.
+	if err := config.EnsureWritableDir(cfg.OutputDir); err != nil {
+		fmt.Fprintf(os.Stderr, "error: output dir is not usable: %v\n", err)
+		os.Exit(1)
+	}
+	logger := createLogger(cfg)
+
+	imgs, err := loadImages(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	refs := imagelist.Refs(imgs)
+	fmt.Printf("downloading %d image(s) for %s\n", len(refs), cfg.Platform)
+
+	ctx := context.Background()
+	pl := pipeline.New(cfg, logger)
+	session, err := pl.NewSession()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	defer func() {
+		if session.TempWorkDir {
+			_ = os.RemoveAll(session.WorkDir)
+		}
+	}()
+
+	entries, failures, err := pl.Download(ctx, session, refs, batchProgress, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "batch: %v\n", err)
+		os.Exit(1)
+	}
+	for _, f := range failures {
+		fmt.Fprintf(os.Stderr, "failed: %s: %v\n", f.Ref, f.Err)
+	}
+	if len(entries) == 0 {
+		fmt.Fprintln(os.Stderr, "batch: no images downloaded")
+		os.Exit(1)
+	}
+	path, err := pl.Bundle(entries)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "batch: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("bundle: %s\n", path)
+	if len(failures) > 0 {
+		fmt.Printf("%d image(s) failed and were skipped\n", len(failures))
+	}
+}
+
+// batchProgress prints one line per finished image to stdout.
+func batchProgress(current, total int, ref string, err error) {
+	status := "ok"
+	if err != nil {
+		status = "FAILED"
+	}
+	fmt.Printf("[%d/%d] %s %s\n", current, total, status, ref)
+}
+
+func createLogger(cfg config.Config) *log.Logger {
+	// verbose is the primary switch; an explicit log_level: debug in the config
+	// also enables logging, so the config-only batch path can turn on logs
+	// without a -v flag (info stays gated so default runs write no log file).
+	if !cfg.Verbose && cfg.LogLevel != "debug" {
+		return log.Discard()
+	}
+	level := parseLogLevel(cfg.LogLevel)
+	// 0o600 so image refs and proxy hosts in logs are not world-readable.
+	f, err := os.OpenFile(cfg.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: cannot open log file %s: %v\n", cfg.LogFile, err)
+		return log.Discard()
+	}
+	return log.New(f, level)
+}
+
+func parseLogLevel(level string) log.Level {
+	switch level {
+	case "silent":
+		return log.LevelSilent
+	case "debug":
+		return log.LevelDebug
+	case "info":
+		return log.LevelInfo
+	default:
+		fmt.Fprintf(os.Stderr, "warning: unknown log level %q, using info\n", level)
+		return log.LevelInfo
+	}
+}
+
+// runVerify runs the verify subcommand: `dockerdownloader verify <bundle>`.
+func runVerify(args []string) {
+	if len(args) != 1 {
+		fmt.Fprintf(os.Stderr, "usage: dockerdownloader verify <bundle.tar.gz>\n")
+		os.Exit(2)
+	}
+	if err := bundle.Verify(args[0]); err != nil {
+		fmt.Fprintf(os.Stderr, "verify: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("ok: %s is intact\n", args[0])
+}
+
+// runDiff runs the diff subcommand: `dockerdownloader diff <a> <b>`.
+func runDiff(args []string) {
+	if len(args) != 2 {
+		fmt.Fprintf(os.Stderr, "usage: dockerdownloader diff <bundle-a> <bundle-b>\n")
+		os.Exit(2)
+	}
+	result, err := bundle.Diff(args[0], args[1])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "diff: %v\n", err)
+		os.Exit(1)
+	}
+	printDiff(result)
+}
+
+func printDiff(r bundle.DiffResult) {
+	if len(r.Added) == 0 && len(r.Removed) == 0 && len(r.Changed) == 0 {
+		fmt.Println("no image differences")
+		return
+	}
+	for _, ref := range r.Added {
+		fmt.Printf("+ %s\n", ref)
+	}
+	for _, ref := range r.Removed {
+		fmt.Printf("- %s\n", ref)
+	}
+	for _, c := range r.Changed {
+		fmt.Printf("~ %s\n    %s -> %s\n", c.Ref, digestOrNone(c.FromDigest), digestOrNone(c.ToDigest))
+	}
+}
+
+func digestOrNone(d string) string {
+	if d == "" {
+		return "(none)"
+	}
+	return d
+}

@@ -1,0 +1,223 @@
+# =============================================================================
+# dockerdownloader configuration example
+# =============================================================================
+#
+# Copy this file to the default auto-load path (preferred):
+#   ~/.config/dockerdownloader/config.yaml
+# Or, if that file does not exist, macOS also checks:
+#   ~/Library/Application Support/dockerdownloader/config.yaml
+# Or pass an explicit path:
+#   ./config.yaml   →   dockerdownloader -config ./config.yaml
+#
+# Usage:
+#   mkdir -p ~/.config/dockerdownloader
+#   cp config.example.yaml ~/.config/dockerdownloader/config.yaml
+#   # edit as needed, then:
+#   dockerdownloader                          # TUI, reads images_file below
+#   dockerdownloader -config /path/to/config.yaml
+#   dockerdownloader batch images.yaml        # headless
+##
+# Precedence (highest wins):
+#   1. CLI flags (when set / non-sentinel)
+#   2. Values in this file
+#   3. Built-in defaults (see each field below)
+#   4. Environment fallback (proxy only: HTTP_PROXY, then HTTPS_PROXY)
+#
+# Unset YAML fields keep their defaults (Load unmarshals onto Default()).
+# A missing config file is not an error: defaults are used as-is.
+# Unknown keys are rejected (fail closed): a typo'd field name aborts startup
+# instead of being silently ignored, which would otherwise leave you running
+# with a default you never intended.
+#
+# Source of truth: pkg/config/config.go (Config + Default).
+# CLI merge rules: main.go. User docs: README.md.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Registry & retagging
+# -----------------------------------------------------------------------------
+
+# Prefix prepended to every image reference when retagging for the airgapped
+# registry. Destination refs become:
+#   <registry_prefix>/<original-path>:<tag>
+# Example: "rgy01.domain.local" → rgy01.domain.local/quay.io/argoproj/argocd:v3.2.6
+# Docker Hub shorthand is expanded first, so "redis:7" becomes
+#   rgy01.domain.local/docker.io/library/redis:7
+# CLI: -registry-prefix
+# Default: "" (no retag prefix)
+registry_prefix: ""
+
+# When true, pull from private registries using the default Docker keychain
+# (~/.docker/config.json, $DOCKER_CONFIG/config.json, or Podman
+# containers/auth.json). Log in first with `docker login` or `podman login`.
+# CLI: -registry-auth
+# Default: false
+registry_auth: false
+
+# -----------------------------------------------------------------------------
+# Platform & layout
+# -----------------------------------------------------------------------------
+
+# OS/arch platform for multi-arch image pulls (go-containerregistry platform
+# filter). Common values: linux/amd64, linux/arm64.
+# One platform per run: to bundle two architectures of the same list, run twice
+# into differently named bundles.
+# CLI: -platform
+# Default: "linux/amd64"
+platform: "linux/amd64"
+
+# Directory where finished bundles are written
+# (<bundle_name>-bundle.tar.gz or .tar.zst).
+# CLI: -output
+# Default: "archives"
+output_dir: "archives"
+
+# Directory for intermediate files (image tarballs). Empty string → a fresh
+# temp dir each run (removed on exit). Use a fixed path when you want
+# -resume / resume: true.
+#
+# A fixed work_dir is preserved between runs, including its image tarballs, so
+# -resume can rebuild a bundle without re-pulling. Delete the directory when you
+# want to reclaim the disk space.
+# CLI: -work-dir
+# Default: "" (temporary)
+work_dir: ""
+
+# Parent directory used for temporary work directories when work_dir is empty.
+# At startup the path is tested for write permissions; if it is not writable,
+# dockerdownloader warns and tries common fallbacks such as /tmp, /var/tmp, and
+# the current working directory.
+# CLI: -temp-dir
+# Default: "" (system temp dir, e.g. /tmp)
+temp_dir: ""
+
+# -----------------------------------------------------------------------------
+# Input
+# -----------------------------------------------------------------------------
+
+# YAML file listing the images to bundle. Used by the TUI; the batch subcommand
+# takes the list path as its argument instead.
+# See images.example.yaml for the format.
+# CLI: -images
+# Default: "images.yaml"
+images_file: "images.yaml"
+
+# Name of the output archive: <bundle_name>-bundle.tar.<ext>. Unsafe characters
+# are sanitized, so "../../etc/passwd" cannot escape output_dir.
+# CLI: -name
+# Default: "images"
+bundle_name: "images"
+
+# -----------------------------------------------------------------------------
+# Download behavior
+# -----------------------------------------------------------------------------
+
+# Max parallel image downloads. Values below 1 are treated as 1.
+# CLI: -concurrency
+# Default: 4
+concurrency: 4
+
+# Additional retry attempts after the first failed pull, with exponential
+# backoff. Negative values are treated as 0.
+# CLI: -retries
+# Default: 2
+retries: 2
+
+# Bundle archive codec:
+#   gzip  → .tar.gz (widest compatibility)
+#   zstd  → .tar.zst (typically smaller)
+# Invalid values fail at startup (fail-fast validation).
+# CLI: -compression
+# Default: "gzip"
+compression: "gzip"
+
+# Minimum free disk space (MiB) on the work directory's filesystem before
+# download starts. Set to 0 to disable the check.
+# CLI: -min-free-mb
+# Default: 2048
+min_free_disk_mb: 2048
+
+# When true, reuse image tarballs already present under work_dir instead of
+# re-pulling. Only useful with a fixed work_dir (not a temp path).
+# Reuse requires matching content-hash (.sha256) and registry digest (.digest)
+# sidecars from a prior successful pull; older work dirs without content hashes
+# re-pull safely.
+# CLI: -resume (flag enables only; cannot turn resume off from config via flag)
+# Default: false
+resume: false
+
+# -----------------------------------------------------------------------------
+# Network
+# -----------------------------------------------------------------------------
+
+# Proxy URL for registry image pulls.
+# Example: "http://proxy.domain.local:3128"
+# If left empty here and unset on the CLI, falls back to HTTP_PROXY, then
+# HTTPS_PROXY from the environment.
+# CLI: -proxy
+# Default: ""
+https_proxy: ""
+
+# -----------------------------------------------------------------------------
+# TUI appearance
+# -----------------------------------------------------------------------------
+
+# TUI color theme:
+#   auto            follow the terminal (default; no forced background)
+#   light           light palette + matching terminal background
+#   dark            dark palette + matching terminal background
+#   high-contrast   high-contrast palette
+#   ocean           cool blue palette
+#   matrix          green-on-black palette
+# Named themes (everything except auto) set a matching terminal background so
+# adaptive text stays readable. Press Ctrl+T in the TUI to open the theme menu.
+# CLI: -theme
+# Default: "auto"
+theme: "auto"
+
+# -----------------------------------------------------------------------------
+# Logging
+# -----------------------------------------------------------------------------
+
+# When true, write leveled logs to log_file. Also implied when log_level is set
+# via CLI (-log-level). Without verbose, logging is discarded (silent UI-only).
+# CLI: -v implies verbose=true and log_level=debug
+# Default: false
+verbose: false
+
+# Log verbosity when logging is enabled: silent | info | debug
+# CLI: -log-level (setting the flag also forces verbose=true)
+# Default: "info"
+log_level: "info"
+
+# Path for log output when verbose logging is on. Opened append-only with mode
+# 0600 (image refs / proxy hosts are not world-readable).
+#
+# Merge note: if log_file is non-empty in this file, it wins over the CLI
+# -log-file flag. The CLI default is used only when this field is empty.
+# CLI: -log-file (default when config log_file is empty: "dockerdownloader.log")
+# Default: "" (then CLI/default "dockerdownloader.log")
+log_file: ""
+# Example: log_file: "dockerdownloader.log"
+
+# =============================================================================
+# Minimal production-oriented example (uncomment and adapt)
+# =============================================================================
+#
+# registry_prefix: "rgy01.domain.local"
+# platform: "linux/amd64"
+# images_file: "images-prod.yaml"
+# bundle_name: "prod-images"
+# output_dir: "archives"
+# work_dir: "./workdir"
+# concurrency: 4
+# retries: 2
+# compression: "zstd"
+# min_free_disk_mb: 4096
+# resume: true
+# https_proxy: "http://proxy.domain.local:3128"
+# registry_auth: true
+# theme: "dark"
+# verbose: true
+# log_level: "debug"
+# log_file: "dockerdownloader.log"

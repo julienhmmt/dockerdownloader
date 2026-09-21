@@ -1,0 +1,55 @@
+package bundle
+
+import (
+	"encoding/json"
+	"path/filepath"
+	"time"
+
+	"github.com/julienhmmt/dockerdownloader/pkg/version"
+)
+
+// tool is the producer name recorded in the provenance manifest.
+const tool = "dockerdownloader"
+
+// provenance is a lightweight, machine-readable record of what a bundle
+// contains: the bundle name, the codec, the platform, and every image with its
+// pinned digest. It is a provenance stub — not a full SPDX/CycloneDX SBOM — but
+// it is enough to audit or diff a bundle on the airgapped side.
+type provenance struct {
+	Tool        string            `json:"tool"`
+	ToolVersion string            `json:"toolVersion,omitempty"`
+	CreatedAt   string            `json:"createdAt"`
+	Name        string            `json:"name"`
+	Platform    string            `json:"platform,omitempty"`
+	Compression string            `json:"compression"`
+	Images      []provenanceImage `json:"images"`
+}
+
+type provenanceImage struct {
+	Source string `json:"source"`
+	Dest   string `json:"dest"`
+	Digest string `json:"digest,omitempty"`
+	Tar    string `json:"tar"`
+}
+
+// buildProvenance renders the manifest.json contents for spec. now supplies the
+// timestamp so callers (and tests) can control it.
+func buildProvenance(spec Spec, compression string, now time.Time) ([]byte, error) {
+	p := provenance{
+		Tool:        tool,
+		ToolVersion: version.Version,
+		CreatedAt:   now.UTC().Format(time.RFC3339),
+		Name:        spec.Name,
+		Platform:    spec.Platform,
+		Compression: compression,
+	}
+	for _, img := range spec.Images {
+		p.Images = append(p.Images, provenanceImage{
+			Source: img.SourceRef,
+			Dest:   img.DestRef,
+			Digest: img.Digest,
+			Tar:    "images/" + filepath.Base(img.TarPath),
+		})
+	}
+	return json.MarshalIndent(p, "", "  ")
+}
