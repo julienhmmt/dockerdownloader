@@ -16,7 +16,10 @@ images:
   - nginx:1.27
   - quay.io/argoproj/argocd:v3.2.6
   - docker.io/library/redis:7.2
-  # Digest-pinned references are accepted. Note the destination is always a
-  # tag, because a docker-archive tarball cannot be tagged by digest: this
-  # mirrors to <prefix>/docker.io/library/postgres:latest.
-  - docker.io/library/postgres@sha256:6c3c624b58dbbcd3c0dd82b4c53f04194d1247c6eebdaab7c610cf7d66709b3b
+  # Digest-pinned references are accepted, and the digest must exist on the
+  # registry or the pull fails with MANIFEST_UNKNOWN. Note the destination is
+  # always a tag, because a docker-archive tarball cannot be tagged by digest:
+  # this mirrors to <prefix>/docker.io/library/postgres:latest.
+  # The digest below is the multi-arch index for postgres:17 (linux/amd64 is
+  # resolved from it at pull time).
+  - docker.io/library/postgres@sha256:f4c66b820c6f974249089d3d16d86a3698eae11e8746eb6644b2271031e91232
