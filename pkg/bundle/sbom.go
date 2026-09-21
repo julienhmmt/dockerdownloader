@@ -92,7 +92,7 @@ func buildSBOM(spec Spec, now time.Time) ([]byte, error) {
 				{
 					ReferenceCategory: "PACKAGE-MANAGER",
 					ReferenceType:     "purl",
-					ReferenceLocator:  fmt.Sprintf("pkg:oci/%s", img.SourceRef),
+					ReferenceLocator:  imagePURL(img),
 				},
 			},
 		}
@@ -118,4 +118,46 @@ func parseDigest(d string) (algo, value string) {
 		return strings.ToUpper(d[:i]), d[i+1:]
 	}
 	return "SHA256", d
+}
+
+// imagePURL renders a valid package-url for an OCI image. A purl requires an
+// "@version" component, so the pinned digest is used when present (it is the
+// precise identity of the image) and the tag is the fallback; the repository
+// path is carried as the repository_url qualifier so the reference stays
+// unambiguous. The previous "pkg:oci/<sourceRef>" form put a tag inside the
+// name, which strict purl consumers reject.
+func imagePURL(img ImageEntry) string {
+	repo, tag, digest := splitImageRef(img.SourceRef)
+	version := digest
+	if version == "" {
+		version = tag
+	}
+	name := repo
+	if i := strings.LastIndex(repo, "/"); i >= 0 {
+		name = repo[i+1:]
+	}
+	purl := "pkg:oci/" + name
+	if version != "" {
+		purl += "@" + version
+	}
+	if repo != "" {
+		purl += "?repository_url=" + repo
+	}
+	return purl
+}
+
+// splitImageRef separates an image reference into repository, tag, and digest.
+// The tag and digest are returned without their separators. A registry port
+// colon is not mistaken for a tag separator.
+func splitImageRef(ref string) (repo, tag, digest string) {
+	repo = strings.TrimSpace(ref)
+	if at := strings.Index(repo, "@"); at >= 0 {
+		digest = repo[at+1:]
+		repo = repo[:at]
+	}
+	if colon := strings.LastIndex(repo, ":"); colon >= 0 && !strings.Contains(repo[colon+1:], "/") {
+		tag = repo[colon+1:]
+		repo = repo[:colon]
+	}
+	return repo, tag, digest
 }

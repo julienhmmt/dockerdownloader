@@ -44,6 +44,34 @@ func TestBuildSBOM_HasRequiredFields(t *testing.T) {
 	}
 }
 
+func TestBuildSBOM_PurlIsWellFormed(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{"tagged ref", "nginx:1.27", "pkg:oci/nginx@1.27?repository_url=nginx"},
+		{"digest-pinned ref", "ghcr.io/dexidp/dex@sha256:abc", "pkg:oci/dex@sha256:abc?repository_url=ghcr.io/dexidp/dex"},
+		{"registry path with tag", "quay.io/argoproj/argocd:v3.2.6", "pkg:oci/argocd@v3.2.6?repository_url=quay.io/argoproj/argocd"},
+		{"digest preferred over tag", "docker.io/library/nginx:1.27@sha256:def", "pkg:oci/nginx@sha256:def?repository_url=docker.io/library/nginx"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := Spec{Name: "c", Images: []ImageEntry{{SourceRef: tc.source, Digest: "sha256:abc"}}}
+			out, err := buildSBOM(spec, fixedTime)
+			require.NoError(t, err)
+			var doc spdxDocument
+			require.NoError(t, json.Unmarshal(out, &doc), "document must still unmarshal")
+			require.Len(t, doc.Packages, 1)
+			require.Len(t, doc.Packages[0].ExternalRefs, 1)
+			ref := doc.Packages[0].ExternalRefs[0]
+			assert.Equal(t, "PACKAGE-MANAGER", ref.ReferenceCategory)
+			assert.Equal(t, "purl", ref.ReferenceType)
+			assert.Equal(t, tc.want, ref.ReferenceLocator)
+		})
+	}
+}
+
 func TestBuildSBOM_ImageDigestAsChecksum(t *testing.T) {
 	spec := Spec{
 		Name:   "c",
