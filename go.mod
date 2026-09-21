@@ -1,14 +1,18 @@
 module github.com/julienhmmt/dockerdownloader
 
-go 1.26.0
+go 1.27.0
 
-// go1.26.6 patches four standard-library issues reachable from this program
-// (GO-2026-6218 net/url, GO-2026-6090 crypto/tls, GO-2026-5972 encoding/asn1,
-// GO-2026-5026 net/http). CI resolves this directive via
+// go1.27.1 is the patched stable toolchain. CI resolves this directive via
 // actions/setup-go's go-version-file and runs with GOTOOLCHAIN=local, so this
-// line is what keeps govulncheck green. With GOTOOLCHAIN=auto, the go command
-// downloads this toolchain when the host is older.
-toolchain go1.26.6
+// line is what decides which stdlib govulncheck inspects. With
+// GOTOOLCHAIN=auto, the go command downloads this toolchain when the host is
+// older.
+//
+// Keep in sync with the go directive: raising "go" to a language version newer
+// than the Go used to build golangci-lint makes lint fail outright
+// ("the Go language version ... is lower than the targeted Go version"), so
+// golangci-lint in CI must be v2.13.2+ (built with go1.27).
+toolchain go1.27.1
 
 require (
 	charm.land/bubbles/v2 v2.2.1

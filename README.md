@@ -25,7 +25,7 @@ go install github.com/julienhmmt/dockerdownloader@latest
 make build          # → ./dockerdownloader
 ```
 
-Requires Go 1.26+ to build. No runtime dependencies.
+Requires Go 1.27+ to build. No runtime dependencies.
 
 ## Quick start
 
