@@ -157,6 +157,8 @@ resume: false
 # Example: "http://proxy.domain.local:3128"
 # If left empty here and unset on the CLI, falls back to HTTP_PROXY, then
 # HTTPS_PROXY from the environment.
+# The URL is validated at startup, so a malformed value fails once with a
+# clear message instead of once per image after the download has begun.
 # CLI: -proxy
 # Default: ""
 https_proxy: ""

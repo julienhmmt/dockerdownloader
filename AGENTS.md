@@ -77,8 +77,8 @@ The TUI owns screens; `pkg/pipeline` owns orchestration.
    failure. Fixed-slot result array keeps **input order**.
 5. **Retry**: `saveWithRetry` exponential backoff; cancellable via context.
    Tests shrink `retryBaseDelay`.
-6. **Preflight**: compression codec, theme, work dir, output dir, free disk
-   (`-min-free-mb`) fail before the long download path.
+6. **Preflight**: compression codec, theme, proxy URL, work dir, output dir, free
+   disk (`-min-free-mb`) fail before the long download path.
 7. **Bundle integrity**: every file hashed into `sha256sums.txt`, and `Verify`
    rejects both a mismatch and an archive entry the manifest does not list.
    Generated `load.sh` verifies checksums, refuses to run when

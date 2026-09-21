@@ -11,6 +11,33 @@ import (
 	"github.com/julienhmmt/dockerdownloader/pkg/config"
 )
 
+func TestValidateProxy(t *testing.T) {
+	tests := []struct {
+		name    string
+		rawURL  string
+		wantErr bool
+	}{
+		{"empty is valid", "", false},
+		{"whitespace is valid", "   ", false},
+		{"valid http", "http://proxy.domain.local:3128", false},
+		{"valid https", "https://proxy.domain.local:3128", false},
+		{"invalid port", "http://[::1]:namedport", true},
+		{"missing scheme", "proxy.domain.local:3128", true},
+		{"missing host", "http://", true},
+		{"unsupported scheme is still parseable", "ftp://proxy:21", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := config.ValidateProxy(tc.rawURL)
+			if tc.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
+		})
+	}
+}
+
 func TestDefault_HasSensibleValues(t *testing.T) {
 	cfg := config.Default()
 	assert.Equal(t, "linux/amd64", cfg.Platform)

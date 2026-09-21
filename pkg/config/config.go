@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -127,6 +128,26 @@ func NormalizeTheme(name string) string {
 		return ThemeAuto
 	}
 	return n
+}
+
+// ValidateProxy reports whether rawURL is a usable proxy URL. An empty value is
+// valid (no proxy). It runs the same url.Parse the registry puller would
+// otherwise run lazily on the first pull, so a malformed proxy fails once at
+// startup instead of once per image after the download path has begun. The
+// puller keeps its lazy parse as a second line of defence.
+func ValidateProxy(rawURL string) error {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return nil
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid proxy URL %q: %w", rawURL, err)
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return fmt.Errorf("invalid proxy URL %q: missing scheme or host", rawURL)
+	}
+	return nil
 }
 
 // ThemeMenuIndex returns the index of name in ThemeMenu, or 0 (auto) if unknown.

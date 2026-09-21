@@ -133,6 +133,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+	if err := config.ValidateProxy(cfg.HTTPSProxy); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
 	logger := createLogger(cfg)
 
 	// Preflight the image list before opening the TUI: an invalid list must fail
@@ -258,6 +262,10 @@ func runBatch(args []string) {
 	cfg.ImagesFile = rest[0]
 	cfg = applyProxyEnv(cfg)
 	if err := bundle.ValidateCompression(cfg.Compression); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	if err := config.ValidateProxy(cfg.HTTPSProxy); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
