@@ -309,6 +309,19 @@ func TestHandleDownloadReviewKey_ContinueNoopWithoutEntries(t *testing.T) {
 	assert.Nil(t, cmd)
 }
 
+func TestHandleDownloadReviewKey_NavigatesFailures(t *testing.T) {
+	m := newTestModel()
+	m.state = stateDownloadReview
+	m.failures = []pipeline.ImageFailure{{Ref: "a:1"}, {Ref: "b:2"}, {Ref: "c:3"}}
+
+	got, _ := m.handleDownloadReviewKey(keyPress("j"))
+	assert.Equal(t, 1, got.(model).failCursor)
+	got, _ = got.(model).handleDownloadReviewKey(keyPress("G"))
+	assert.Equal(t, 2, got.(model).failCursor)
+	got, _ = got.(model).handleDownloadReviewKey(keyPress("g"))
+	assert.Equal(t, 0, got.(model).failCursor)
+}
+
 func TestSelectedRefs_OnlySelected(t *testing.T) {
 	imgs := []imagelist.Image{
 		{Ref: "a:1", Selected: true},

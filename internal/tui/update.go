@@ -59,6 +59,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.spinner.Tick, bundleCmd(m.pipeline, m.entries))
 		}
 		m.state = stateDownloadReview
+		m.failCursor, m.failOffset = 0, 0
 		return m, nil
 	case doneMsg:
 		if m.state != stateBundling {
@@ -296,9 +297,30 @@ func (m model) startSession() (pipeline.Session, error) {
 // user can retry failed images, continue with what downloaded, or abort.
 func (m model) handleDownloadReviewKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "up", "k":
+		if m.failCursor > 0 {
+			m.failCursor--
+		}
+	case "down", "j":
+		if m.failCursor < len(m.failures)-1 {
+			m.failCursor++
+		}
+	case "pgup", "ctrl+u":
+		_, visible := m.failViewport()
+		m.failCursor -= visible
+	case "pgdown", "ctrl+d":
+		_, visible := m.failViewport()
+		m.failCursor += visible
+	case "g", "home":
+		m.failCursor = 0
+	case "G", "end":
+		if n := len(m.failures); n > 0 {
+			m.failCursor = n - 1
+		}
 	case "r":
 		refs := failureRefs(m.failures)
 		m.failures = nil
+		m.failCursor, m.failOffset = 0, 0
 		m.imageProgress = map[string]imageProgress{}
 		m.state = stateDownloading
 		m.errStep = "download"
@@ -315,6 +337,7 @@ func (m model) handleDownloadReviewKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
 		m.cancel()
 		return m, tea.Batch(cleanupCmd(m.session), tea.Quit)
 	}
+	m.ensureFailCursorVisible()
 	return m, nil
 }
 

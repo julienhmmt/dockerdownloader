@@ -121,7 +121,7 @@ override their config values. Run `dockerdownloader -h` for the full list.
 | Review | `space` toggle · `a` add image · `d` delete · `j`/`k` move · `pgup`/`pgdn` page · `g`/`G` jump · `p` purge cache · `enter` download · `esc` quit |
 | Purge | `space` toggle · `a` all · `j`/`k` move · `pgup`/`pgdn` page · `g`/`G` jump · `enter` confirm · `esc` back |
 | Download | `esc` cancel (keeps what already downloaded) |
-| Failures | `r` retry failed · `c` continue with what downloaded · `q` abort |
+| Failures | `j`/`k` move · `r` retry failed · `c` continue with what downloaded · `q` abort |
 | Any | `ctrl+t` theme menu · `ctrl+c` quit |
 
 `p` lists the image tarballs cached under `work_dir/images/` so you can delete

@@ -228,22 +228,46 @@ func (m model) viewBundling() string {
 }
 
 // viewDownloadReview lists the images that failed to download and the reasons,
-// letting the user retry, continue, or abort.
+// letting the user retry, continue, or abort. Only a window of rows is drawn so
+// a run with many failures stays navigable on a short terminal.
 func (m model) viewDownloadReview() string {
+	start, visible := m.failViewport()
+	end := min(start+visible, len(m.failures))
+	rowWidth := m.reviewRowWidth()
+
 	var rows strings.Builder
-	for index, f := range m.failures {
-		rows.WriteString(m.styles.selected.Render(f.Ref))
+	if start > 0 {
+		rows.WriteString(m.styles.faint.Render(fmt.Sprintf("↑ %d more", start)))
 		rows.WriteString("\n")
-		rows.WriteString(m.styles.muted.Render("  " + errLine(f.Err)))
-		if index < len(m.failures)-1 {
+	}
+	for index := start; index < end; index++ {
+		f := m.failures[index]
+		cursor := "  "
+		if index == m.failCursor {
+			cursor = "▸ "
+		}
+		line := cursor + f.Ref
+		if index == m.failCursor {
+			line = m.styles.hover.Width(rowWidth).Render(line)
+		} else {
+			line = m.styles.selected.Render(line)
+		}
+		rows.WriteString(line)
+		rows.WriteString("\n")
+		rows.WriteString(m.styles.muted.Render("    " + errLine(f.Err)))
+		if index < end-1 {
 			rows.WriteString("\n")
 		}
 	}
+	if end < len(m.failures) {
+		rows.WriteString("\n")
+		rows.WriteString(m.styles.faint.Render(fmt.Sprintf("↓ %d more", len(m.failures)-end)))
+	}
 
 	ok := m.styles.muted.Render(fmt.Sprintf("%d downloaded successfully", len(m.entries)))
-	footer := "r retry failed · q abort"
+	footer := "j/k move · r retry failed · q abort"
 	if len(m.entries) > 0 {
-		footer = fmt.Sprintf("r retry failed · c continue with %d · q abort", len(m.entries))
+		footer = fmt.Sprintf("j/k move · r retry failed · c continue with %d · q abort", len(m.entries))
 	}
 
 	body := lipgloss.JoinVertical(lipgloss.Left,

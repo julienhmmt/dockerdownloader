@@ -222,20 +222,29 @@ func normalizeEntryName(name string) string {
 type DiffResult struct {
 	Added   []string     // refs in b but not in a
 	Removed []string     // refs in a but not in b
-	Changed []DiffChange // same ref, different digest
+	Changed []DiffChange // same source ref, different digest or destination
 }
 
-// DiffChange records a digest change for an image present in both bundles.
+// DiffChange records a digest and/or destination change for an image present in
+// both bundles.
 type DiffChange struct {
 	Ref        string
 	FromDigest string // empty if a had no digest
 	ToDigest   string // empty if b has no digest
+	FromDest   string // destination ref in a
+	ToDest     string // destination ref in b
 }
 
-// Diff compares the image sets of two bundles (by source reference and
-// pinned digest) and returns the differences. It reads only manifest.json
-// from each bundle by streaming the archive and stopping as soon as
-// manifest.json is found; image tar contents are never read into memory.
+// manifestImage is one image's provenance read from a bundle's manifest.json.
+type manifestImage struct {
+	Digest string
+	Dest   string
+}
+
+// Diff compares the image sets of two bundles (by source reference, pinned
+// digest, and destination ref) and returns the differences. It reads only
+// manifest.json from each bundle by streaming the archive and stopping as soon
+// as manifest.json is found; image tar contents are never read into memory.
 func Diff(aPath, bPath string) (DiffResult, error) {
 	aImages, err := readManifestImages(aPath)
 	if err != nil {
@@ -246,11 +255,14 @@ func Diff(aPath, bPath string) (DiffResult, error) {
 		return DiffResult{}, fmt.Errorf("read %s: %w", bPath, err)
 	}
 	var result DiffResult
-	for ref, d := range bImages {
-		if aD, ok := aImages[ref]; !ok {
+	for ref, b := range bImages {
+		a, ok := aImages[ref]
+		if !ok {
 			result.Added = append(result.Added, ref)
-		} else if aD != d {
-			result.Changed = append(result.Changed, DiffChange{Ref: ref, FromDigest: aD, ToDigest: d})
+		} else if a.Digest != b.Digest || a.Dest != b.Dest {
+			result.Changed = append(result.Changed, DiffChange{
+				Ref: ref, FromDigest: a.Digest, ToDigest: b.Digest, FromDest: a.Dest, ToDest: b.Dest,
+			})
 		}
 	}
 	for ref := range aImages {
@@ -265,9 +277,9 @@ func Diff(aPath, bPath string) (DiffResult, error) {
 }
 
 // readManifestImages streams a bundle and returns a map of image source-ref →
-// digest (digest is "" when the registry reported none), reading only
-// manifest.json. Image tar entries are skipped without buffering.
-func readManifestImages(path string) (map[string]string, error) {
+// {digest, dest}, reading only manifest.json. Image tar entries are skipped
+// without buffering.
+func readManifestImages(path string) (map[string]manifestImage, error) {
 	stream, cln, err := openBundleStream(path)
 	if err != nil {
 		return nil, err
@@ -293,9 +305,9 @@ func readManifestImages(path string) (map[string]string, error) {
 		if err := json.Unmarshal(prov, &p); err != nil {
 			return nil, fmt.Errorf("parse manifest.json: %w", err)
 		}
-		m := make(map[string]string, len(p.Images))
+		m := make(map[string]manifestImage, len(p.Images))
 		for _, img := range p.Images {
-			m[img.Source] = img.Digest
+			m[img.Source] = manifestImage{Digest: img.Digest, Dest: img.Dest}
 		}
 		return m, nil
 	}

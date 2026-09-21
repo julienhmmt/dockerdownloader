@@ -68,6 +68,19 @@ func (m model) cacheViewport() (start, visible int) {
 	return m.listViewport(len(m.cacheEntries), m.cacheOffset)
 }
 
+// failViewport returns the first visible index and number of failure rows that
+// fit in the download-review body for the current terminal height.
+func (m model) failViewport() (start, visible int) {
+	return m.listViewport(len(m.failures), m.failOffset)
+}
+
+// ensureFailCursorVisible scrolls failOffset so failCursor stays inside the
+// visible window after navigation or list mutations.
+func (m *model) ensureFailCursorVisible() {
+	_, visible := m.failViewport()
+	m.failCursor, m.failOffset = clampListCursor(len(m.failures), m.failCursor, m.failOffset, visible)
+}
+
 // ensureCacheCursorVisible scrolls cacheOffset so cacheCursor stays inside the
 // visible window after navigation or list mutations.
 func (m *model) ensureCacheCursorVisible() {

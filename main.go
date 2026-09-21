@@ -405,7 +405,11 @@ func printDiff(r bundle.DiffResult) {
 		fmt.Printf("- %s\n", ref)
 	}
 	for _, c := range r.Changed {
-		fmt.Printf("~ %s\n    %s -> %s\n", c.Ref, digestOrNone(c.FromDigest), digestOrNone(c.ToDigest))
+		fmt.Printf("~ %s\n", c.Ref)
+		if c.FromDest != c.ToDest {
+			fmt.Printf("    dest %s -> %s\n", c.FromDest, c.ToDest)
+		}
+		fmt.Printf("    %s -> %s\n", digestOrNone(c.FromDigest), digestOrNone(c.ToDigest))
 	}
 }
 

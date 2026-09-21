@@ -280,6 +280,34 @@ func TestDiff_AddedRemovedChanged(t *testing.T) {
 	assert.Equal(t, "sha256:ccc", result.Changed[0].ToDigest)
 }
 
+// TestDiff_ReportsDestinationChange covers a repointed registry: same source
+// ref and digest, different destination, which the digest-only comparison
+// missed.
+func TestDiff_ReportsDestinationChange(t *testing.T) {
+	work := t.TempDir()
+	outA, outB := t.TempDir(), t.TempDir()
+	imgA := writeTemp(t, work, "a.tar", "tar")
+	imgB := writeTemp(t, work, "b.tar", "tar")
+	a, err := Create(Spec{
+		Name: "a", OutputDir: outA,
+		Images: []ImageEntry{{TarPath: imgA, SourceRef: "x:1", DestRef: "rgy01.local/x:1", Digest: "sha256:aaa"}},
+	})
+	require.NoError(t, err)
+	b, err := Create(Spec{
+		Name: "b", OutputDir: outB,
+		Images: []ImageEntry{{TarPath: imgB, SourceRef: "x:1", DestRef: "rgy02.local/x:1", Digest: "sha256:aaa"}},
+	})
+	require.NoError(t, err)
+	result, err := Diff(a, b)
+	require.NoError(t, err)
+	assert.Empty(t, result.Added)
+	assert.Empty(t, result.Removed)
+	require.Len(t, result.Changed, 1)
+	assert.Equal(t, "x:1", result.Changed[0].Ref)
+	assert.Equal(t, "rgy01.local/x:1", result.Changed[0].FromDest)
+	assert.Equal(t, "rgy02.local/x:1", result.Changed[0].ToDest)
+}
+
 func TestDiff_MissingManifest(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "empty.tar.gz")

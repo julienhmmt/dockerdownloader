@@ -86,8 +86,12 @@ type model struct {
 	imageProgress map[string]imageProgress
 	entries       []bundle.ImageEntry
 	failures      []pipeline.ImageFailure
-	bundlePath    string
-	err           error
+	// failCursor/failOffset window the download-review failure list so a run
+	// with many failures stays navigable on a short terminal.
+	failCursor int
+	failOffset int
+	bundlePath string
+	err        error
 	// errStep labels which async step failed (download, bundle) so the error
 	// screen can frame the message for the user.
 	errStep string
