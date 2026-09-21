@@ -2,10 +2,13 @@ module github.com/julienhmmt/dockerdownloader
 
 go 1.26.0
 
-// go1.26.5 patches crypto/tls ECH privacy leak (GO-2026-5856 / CVE-2026-42505)
-// and os.Root symlink escape (CVE-2026-39822). With GOTOOLCHAIN=auto, the go
-// command downloads this toolchain when the host is older.
-toolchain go1.26.5
+// go1.26.6 patches four standard-library issues reachable from this program
+// (GO-2026-6218 net/url, GO-2026-6090 crypto/tls, GO-2026-5972 encoding/asn1,
+// GO-2026-5026 net/http). CI resolves this directive via
+// actions/setup-go's go-version-file and runs with GOTOOLCHAIN=local, so this
+// line is what keeps govulncheck green. With GOTOOLCHAIN=auto, the go command
+// downloads this toolchain when the host is older.
+toolchain go1.26.6
 
 require (
 	charm.land/bubbles/v2 v2.2.1
