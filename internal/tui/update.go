@@ -181,6 +181,10 @@ func (m model) handleBusyKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case stateDownloading:
 		m.cancel()
 		m.ctx, m.cancel = context.WithCancel(context.Background())
+		// Give the next run a fresh channel: the cancelled goroutine still
+		// holds the old one and may race a terminal send onto it, which the
+		// next run's pump would otherwise consume as its own result.
+		m.activity = make(chan tea.Msg, 16)
 		m.imageProgress = map[string]imageProgress{}
 		m.errStep = ""
 		if len(m.entries) > 0 {

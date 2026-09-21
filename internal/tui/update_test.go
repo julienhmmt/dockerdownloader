@@ -114,6 +114,61 @@ func TestHandleBusyKey_EscBundlingIsNoop(t *testing.T) {
 	assert.Equal(t, stateBundling, got.(model).state)
 }
 
+func TestCancelDownload_StaleDoneDoesNotAffectNextRun(t *testing.T) {
+	m := newTestModel()
+	m.state = stateDownloading
+	stale := m.activity
+	got, _ := m.handleKey(keyPress("esc"))
+	m2 := got.(model)
+	require.Equal(t, stateReview, m2.state)
+	require.NotEqual(t, stale, m2.activity, "cancel must give the next run a fresh channel")
+
+	// The cancelled goroutine's terminal send goes to the channel it still
+	// holds; it must be invisible to the next run's pump.
+	stale <- downloadDoneMsg{entries: []bundle.ImageEntry{{SourceRef: "stale:1"}}}
+
+	m2.state = stateDownloading
+	m2.entries = nil
+	select {
+	case msg := <-m2.activity:
+		t.Fatalf("new run observed a stale message: %#v", msg)
+	default:
+	}
+
+	// A genuine completion for the new run is still processed.
+	got3, _ := m2.Update(downloadDoneMsg{entries: []bundle.ImageEntry{{SourceRef: "fresh:1"}}})
+	m3 := got3.(model)
+	assert.Equal(t, stateBundling, m3.state)
+	require.Len(t, m3.entries, 1)
+	assert.Equal(t, "fresh:1", m3.entries[0].SourceRef)
+}
+
+func TestCancelDownload_StaleProgressIgnored(t *testing.T) {
+	m := newTestModel()
+	m.state = stateDownloading
+	m.downCurrent, m.downTotal = 0, 5
+	stale := m.activity
+	got, _ := m.handleKey(keyPress("esc"))
+	m2 := got.(model)
+	stale <- progressMsg{current: 3, total: 5, ref: "stale:1"}
+
+	// The stale message sits on the abandoned channel, so the new run's
+	// counters are untouched and its pump has nothing queued.
+	assert.Equal(t, 0, m2.downCurrent)
+	select {
+	case msg := <-m2.activity:
+		t.Fatalf("new run observed a stale progress message: %#v", msg)
+	default:
+	}
+
+	// The pump still drains the current channel and advances counters.
+	m2.state = stateDownloading
+	got2, cmd := m2.Update(progressMsg{current: 1, total: 5, ref: "fresh:1"})
+	m3 := got2.(model)
+	assert.Equal(t, 1, m3.downCurrent)
+	assert.NotNil(t, cmd, "pump must continue after a genuine progress message")
+}
+
 func TestHandleReviewKey_SpaceTogglesSelection(t *testing.T) {
 	m := newTestModel()
 	m.state = stateReview
