@@ -1,8 +1,5 @@
 *.log
 .DS_Store
-.env
-.task/checksum
-archives/*
 plans/
 
 # Go
@@ -11,9 +8,6 @@ go-coverage.log
 
 # Binary
 dockerdownloader
-
-# graphify local knowledge graph (AI tooling; not product)
-graphify-out/
 
 # SonarQube local analysis state (token, admin password, coverage reports)
 .sonar/
