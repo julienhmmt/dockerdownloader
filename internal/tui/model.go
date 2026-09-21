@@ -29,6 +29,8 @@ const (
 	stateDone
 	stateError
 	stateThemeMenu
+	statePurge
+	statePurgeConfirm
 )
 
 // imageProgress is the byte-level progress of one in-flight image pull.
@@ -100,6 +102,13 @@ type model struct {
 	themeMenuCursor int
 	themeMenuReturn state
 	themeBeforeMenu string
+
+	// Purge screen: the cached image tarballs in the work dir, which entries
+	// are selected (keyed by TarPath), and the windowed list position.
+	cacheEntries  []pipeline.CacheEntry
+	cacheSelected map[string]bool
+	cacheCursor   int
+	cacheOffset   int
 }
 
 // setStatus stores a soft status message for the next render.
@@ -153,6 +162,7 @@ func newModel(cfg config.Config, logger *log.Logger, imgs []imagelist.Image) mod
 		reviewImages:   imgs,
 		activity:       make(chan tea.Msg, 16),
 		imageProgress:  map[string]imageProgress{},
+		cacheSelected:  map[string]bool{},
 	}
 }
 

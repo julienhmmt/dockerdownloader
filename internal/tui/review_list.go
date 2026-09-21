@@ -7,9 +7,9 @@ import "charm.land/lipgloss/v2"
 // available for image rows.
 const reviewChrome = 12
 
-// reviewViewport returns the first visible index and number of image rows that
-// fit in the review body for the current terminal height.
-func (m model) reviewViewport() (start, visible int) {
+// listViewport returns the first visible index and number of rows that fit in
+// a framed list body for the current terminal height, clamped to n items.
+func (m model) listViewport(n, offset int) (start, visible int) {
 	visible = m.height - reviewChrome
 	if visible < 5 {
 		visible = 5
@@ -17,14 +17,13 @@ func (m model) reviewViewport() (start, visible int) {
 	if m.width == 0 || m.height == 0 {
 		visible = 20 // tests / pre-WindowSizeMsg
 	}
-	n := len(m.reviewImages)
 	if n == 0 {
 		return 0, 0
 	}
 	if visible > n {
 		visible = n
 	}
-	start = m.reviewOffset
+	start = offset
 	if start < 0 {
 		start = 0
 	}
@@ -34,30 +33,46 @@ func (m model) reviewViewport() (start, visible int) {
 	return start, visible
 }
 
+// clampListCursor keeps cursor inside [0,n) and scrolls offset so the cursor
+// stays inside the window of visible rows. n == 0 resets both.
+func clampListCursor(n, cursor, offset, visible int) (int, int) {
+	if n == 0 {
+		return 0, 0
+	}
+	cursor = min(max(cursor, 0), n-1)
+	if cursor < offset {
+		offset = cursor
+	}
+	if cursor >= offset+visible {
+		offset = cursor - visible + 1
+	}
+	return cursor, max(offset, 0)
+}
+
+// reviewViewport returns the first visible index and number of image rows that
+// fit in the review body for the current terminal height.
+func (m model) reviewViewport() (start, visible int) {
+	return m.listViewport(len(m.reviewImages), m.reviewOffset)
+}
+
 // ensureReviewCursorVisible scrolls reviewOffset so reviewCursor stays inside
 // the visible window after navigation or list mutations.
 func (m *model) ensureReviewCursorVisible() {
-	if len(m.reviewImages) == 0 {
-		m.reviewCursor = 0
-		m.reviewOffset = 0
-		return
-	}
-	if m.reviewCursor < 0 {
-		m.reviewCursor = 0
-	}
-	if m.reviewCursor >= len(m.reviewImages) {
-		m.reviewCursor = len(m.reviewImages) - 1
-	}
 	_, visible := m.reviewViewport()
-	if m.reviewCursor < m.reviewOffset {
-		m.reviewOffset = m.reviewCursor
-	}
-	if m.reviewCursor >= m.reviewOffset+visible {
-		m.reviewOffset = m.reviewCursor - visible + 1
-	}
-	if m.reviewOffset < 0 {
-		m.reviewOffset = 0
-	}
+	m.reviewCursor, m.reviewOffset = clampListCursor(len(m.reviewImages), m.reviewCursor, m.reviewOffset, visible)
+}
+
+// cacheViewport returns the first visible index and number of cache rows that
+// fit in the purge body for the current terminal height.
+func (m model) cacheViewport() (start, visible int) {
+	return m.listViewport(len(m.cacheEntries), m.cacheOffset)
+}
+
+// ensureCacheCursorVisible scrolls cacheOffset so cacheCursor stays inside the
+// visible window after navigation or list mutations.
+func (m *model) ensureCacheCursorVisible() {
+	_, visible := m.cacheViewport()
+	m.cacheCursor, m.cacheOffset = clampListCursor(len(m.cacheEntries), m.cacheCursor, m.cacheOffset, visible)
 }
 
 // reviewFrameInnerWidth returns the content width inside the review frame

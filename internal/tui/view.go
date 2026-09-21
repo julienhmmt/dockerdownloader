@@ -43,6 +43,10 @@ func (m model) render() string {
 		return m.viewError()
 	case stateThemeMenu:
 		return m.viewThemeMenu()
+	case statePurge:
+		return m.viewPurge()
+	case statePurgeConfirm:
+		return m.viewPurgeConfirm()
 	}
 	return ""
 }
@@ -127,9 +131,9 @@ func (m model) viewReview() string {
 	meta := m.styles.muted.Render(fmt.Sprintf("prefix %s · platform %s · out %s",
 		m.cfg.RegistryPrefix, m.cfg.Platform, m.cfg.OutputDir))
 	body := lipgloss.JoinVertical(lipgloss.Left, rows.String(), "", meta)
-	help := "space toggle · a add · d delete · j/k move · pgup/pgdn page · g/G jump · enter download · ctrl+t themes · esc quit"
+	help := "space toggle · a add · d delete · j/k move · pgup/pgdn page · g/G jump · p purge · enter download · ctrl+t themes · esc quit"
 	if len(m.reviewImages) == 0 {
-		help = "a add · ctrl+t themes · esc quit"
+		help = "a add · p purge · ctrl+t themes · esc quit"
 	}
 	return m.screen(title, subtitle, body, help)
 }
@@ -335,6 +339,96 @@ func bundleSizeHint(path string) string {
 		return ""
 	}
 	return humanBytes(info.Size())
+}
+
+// viewPurge renders the work-dir cache as a selectable list so the user can
+// reclaim disk by deleting individual cached image tarballs.
+func (m model) viewPurge() string {
+	title := "Cached images"
+	subtitle := fmt.Sprintf("%d selected of %d · %s", m.countCacheSelected(), len(m.cacheEntries), m.pipeline.CacheDir())
+
+	var rows strings.Builder
+	start, visible := m.cacheViewport()
+	end := min(start+visible, len(m.cacheEntries))
+	rowWidth := m.reviewRowWidth()
+	if start > 0 {
+		rows.WriteString(m.styles.faint.Render(fmt.Sprintf("↑ %d more", start)))
+		rows.WriteString("\n")
+	}
+	for i := start; i < end; i++ {
+		entry := m.cacheEntries[i]
+		cursor := "  "
+		if i == m.cacheCursor {
+			cursor = "▸ "
+		}
+		box := "[ ]"
+		if m.cacheSelected[entry.TarPath] {
+			box = "[x]"
+		}
+		meta := humanBytes(entry.Size)
+		if d := shortDigest(entry.Digest); d != "" {
+			meta += "  " + d
+		}
+		nameWidth := max(8, m.reviewFrameInnerWidth()-6-lipgloss.Width(meta)-2)
+		name := truncateMiddle(entry.Name, nameWidth)
+		line := fmt.Sprintf("%s%s %s  %s", cursor, box, name, meta)
+		switch {
+		case i == m.cacheCursor:
+			// Full-width soft wash so the hover bar spans the whole row.
+			line = m.styles.hover.Width(rowWidth).Render(line)
+		case m.cacheSelected[entry.TarPath]:
+			line = fmt.Sprintf("%s%s %s  %s", cursor, m.styles.checked.Render(box), m.styles.primary.Render(name), m.styles.muted.Render(meta))
+		default:
+			line = m.styles.primary.Render(line)
+		}
+		rows.WriteString(line)
+		if i < end-1 {
+			rows.WriteString("\n")
+		}
+	}
+	if end < len(m.cacheEntries) {
+		rows.WriteString("\n")
+		rows.WriteString(m.styles.faint.Render(fmt.Sprintf("↓ %d more", len(m.cacheEntries)-end)))
+	}
+
+	body := lipgloss.JoinVertical(lipgloss.Left, rows.String(), "",
+		m.styles.muted.Render("Deleting a cached image frees disk; it is re-pulled on the next run."))
+	return m.screen(title, subtitle, body,
+		"space toggle · a all · j/k move · pgup/pgdn page · g/G jump · enter purge · ctrl+t themes · esc back")
+}
+
+// viewPurgeConfirm asks the user to confirm deleting the selected cache
+// entries, showing the count and total size that will be freed.
+func (m model) viewPurgeConfirm() string {
+	selected := m.selectedCacheEntries()
+	var rows strings.Builder
+	for i, entry := range selected {
+		rows.WriteString(m.styles.selected.Render(entry.Name))
+		rows.WriteString("  ")
+		rows.WriteString(m.styles.muted.Render(humanBytes(entry.Size)))
+		if i < len(selected)-1 {
+			rows.WriteString("\n")
+		}
+	}
+	body := lipgloss.JoinVertical(lipgloss.Left,
+		m.styles.errorMsg.Render(fmt.Sprintf("Delete %d cached image(s), freeing %s?",
+			len(selected), humanBytes(m.selectedCacheBytes()))),
+		"",
+		rows.String(),
+	)
+	return m.screen("Confirm purge", m.pipeline.CacheDir(), body, "y confirm · n cancel")
+}
+
+// shortDigest trims the "sha256:" prefix and shortens a digest for display.
+func shortDigest(d string) string {
+	if d == "" {
+		return ""
+	}
+	d = strings.TrimPrefix(d, "sha256:")
+	if len(d) > 12 {
+		d = d[:12]
+	}
+	return d
 }
 
 // viewError renders the error screen with an optional step label.

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -126,6 +127,10 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handleDownloadReviewKey(msg)
 	case stateThemeMenu:
 		return m.handleThemeMenuKey(msg)
+	case statePurge:
+		return m.handlePurgeKey(msg)
+	case statePurgeConfirm:
+		return m.handlePurgeConfirmKey(msg)
 	case stateDownloading, stateBundling:
 		return m.handleBusyKey(msg)
 	case stateDone, stateError:
@@ -233,6 +238,9 @@ func (m model) handleReviewKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.addInput.Focus()
 		m.state = stateAddImage
 		return m, nil
+	case "p":
+		m.openPurge()
+		return m, nil
 	case "d":
 		if len(m.reviewImages) > 0 {
 			m.reviewImages = append(m.reviewImages[:m.reviewCursor], m.reviewImages[m.reviewCursor+1:]...)
@@ -304,6 +312,154 @@ func (m model) handleDownloadReviewKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
 		return m, tea.Batch(cleanupCmd(m.session), tea.Quit)
 	}
 	return m, nil
+}
+
+// openPurge loads the work-dir cache into the purge screen. With no persistent
+// work dir, or an empty cache, it reports via status and stays on review: a
+// temporary work dir is removed on exit, so it has nothing to purge.
+func (m *model) openPurge() {
+	m.clearStatus()
+	if m.pipeline.CacheDir() == "" {
+		m.setStatus("No work_dir configured: temporary work dirs are removed on exit, so there is nothing to purge.")
+		return
+	}
+	entries, err := m.pipeline.ListCache()
+	if err != nil {
+		m.setStatus("Cannot read cache: " + err.Error())
+		return
+	}
+	m.cacheEntries = entries
+	m.cacheSelected = map[string]bool{}
+	m.cacheCursor, m.cacheOffset = 0, 0
+	if len(entries) == 0 {
+		m.setStatus("No cached images in " + m.pipeline.CacheDir() + ".")
+		return
+	}
+	m.state = statePurge
+}
+
+// handlePurgeKey processes the cached-image purge list: space toggles an entry,
+// a toggles all, enter asks for confirmation, esc returns to the review screen.
+func (m model) handlePurgeKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q":
+		m.clearStatus()
+		m.state = stateReview
+		m.ensureReviewCursorVisible()
+		return m, nil
+	case "up", "k":
+		if m.cacheCursor > 0 {
+			m.cacheCursor--
+		}
+	case "down", "j":
+		if m.cacheCursor < len(m.cacheEntries)-1 {
+			m.cacheCursor++
+		}
+	case "pgup", "ctrl+u":
+		_, visible := m.cacheViewport()
+		m.cacheCursor -= visible
+	case "pgdown", "ctrl+d":
+		_, visible := m.cacheViewport()
+		m.cacheCursor += visible
+	case "g", "home":
+		m.cacheCursor = 0
+	case "G", "end":
+		if n := len(m.cacheEntries); n > 0 {
+			m.cacheCursor = n - 1
+		}
+	case "space":
+		if len(m.cacheEntries) > 0 {
+			path := m.cacheEntries[m.cacheCursor].TarPath
+			m.cacheSelected[path] = !m.cacheSelected[path]
+		}
+	case "a":
+		selectAll := m.countCacheSelected() != len(m.cacheEntries)
+		for _, entry := range m.cacheEntries {
+			m.cacheSelected[entry.TarPath] = selectAll
+		}
+	case "enter":
+		if m.countCacheSelected() == 0 {
+			m.setStatus("Select at least one image (space).")
+			return m, nil
+		}
+		m.clearStatus()
+		m.state = statePurgeConfirm
+		return m, nil
+	}
+	m.ensureCacheCursorVisible()
+	return m, nil
+}
+
+// handlePurgeConfirmKey performs the purge on confirm and cancels otherwise.
+func (m model) handlePurgeConfirmKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "enter":
+		return m.performPurge(), nil
+	case "n", "esc", "q":
+		m.clearStatus()
+		m.state = statePurge
+		return m, nil
+	}
+	return m, nil
+}
+
+// performPurge deletes the selected cache entries, reloads the list, and
+// reports what was freed via status. It stays on the purge screen (now showing
+// the remaining entries), or returns to review once the cache is empty, rather
+// than dropping to an error screen the user cannot act on.
+func (m model) performPurge() model {
+	removed, freed, err := m.pipeline.PurgeCache(m.selectedCacheEntries())
+	entries, listErr := m.pipeline.ListCache()
+	m.cacheEntries = entries
+	m.cacheSelected = map[string]bool{}
+	m.cacheCursor, m.cacheOffset = 0, 0
+	m.state = statePurge
+	switch {
+	case err != nil:
+		m.setStatus(fmt.Sprintf("Purged %d image(s), freed %s, with errors: %v", removed, humanBytes(freed), err))
+	case listErr != nil:
+		m.setStatus(fmt.Sprintf("Purged %d image(s), freed %s; cannot reload cache: %v", removed, humanBytes(freed), listErr))
+	default:
+		m.setStatus(fmt.Sprintf("Purged %d image(s), freed %s.", removed, humanBytes(freed)))
+	}
+	if len(entries) == 0 {
+		m.state = stateReview
+		m.ensureReviewCursorVisible()
+	}
+	return m
+}
+
+// selectedCacheEntries returns the cache entries marked for removal.
+func (m model) selectedCacheEntries() []pipeline.CacheEntry {
+	out := make([]pipeline.CacheEntry, 0, len(m.cacheEntries))
+	for _, entry := range m.cacheEntries {
+		if m.cacheSelected[entry.TarPath] {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+// countCacheSelected returns the number of cache entries marked for removal.
+func (m model) countCacheSelected() int {
+	count := 0
+	for _, entry := range m.cacheEntries {
+		if m.cacheSelected[entry.TarPath] {
+			count++
+		}
+	}
+	return count
+}
+
+// selectedCacheBytes returns the total size of the selected cache entries.
+func (m model) selectedCacheBytes() int64 {
+	var total int64
+	for _, entry := range m.cacheEntries {
+		if m.cacheSelected[entry.TarPath] {
+			total += entry.Size
+		}
+	}
+	return total
 }
 
 // handleAddImageKey processes the add-custom-image input.

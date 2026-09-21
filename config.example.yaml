@@ -78,7 +78,8 @@ output_dir: "archives"
 #
 # A fixed work_dir is preserved between runs, including its image tarballs, so
 # -resume can rebuild a bundle without re-pulling. Delete the directory when you
-# want to reclaim the disk space.
+# want to reclaim the disk space, or press 'p' in the TUI to purge cached image
+# tarballs individually.
 # CLI: -work-dir
 # Default: "" (temporary)
 work_dir: ""

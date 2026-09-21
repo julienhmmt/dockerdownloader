@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -136,17 +137,36 @@ func main() {
 
 	// Preflight the image list before opening the TUI: an invalid list must fail
 	// with a clear message rather than surface after the user commits to a
-	// download. Same fail-closed check the batch path uses.
-	imgs, err := loadImages(cfg)
+	// download. Same fail-closed check the batch path uses, except that a
+	// missing file still opens the TUI so the user can add images or purge the
+	// work-dir cache.
+	imgs, notice, err := loadImagesForTUI(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 
-	if err := tui.Run(cfg, logger, imgs); err != nil {
+	if err := tui.Run(cfg, logger, imgs, notice); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// loadImagesForTUI reads and validates the configured image list for the
+// interactive path. A missing file is tolerated — the TUI opens with an empty
+// list and a notice, so the user can add images or purge the work-dir cache —
+// but any other failure (unreadable file, malformed YAML, unknown key, invalid
+// reference, duplicate destination) still fails closed: the list is the trust
+// boundary, and nothing is pulled until it validates.
+func loadImagesForTUI(cfg config.Config) (imgs []imagelist.Image, notice string, err error) {
+	imgs, err = loadImages(cfg)
+	if err == nil {
+		return imgs, "", nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Sprintf("No image list at %s. Press 'a' to add one, or 'p' to purge cached images.", cfg.ImagesFile), nil
+	}
+	return nil, "", err
 }
 
 // loadImages reads and validates the configured image list, including the

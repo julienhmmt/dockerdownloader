@@ -43,8 +43,10 @@ Load (images.yaml) → Review (TUI) → Download (parallel registry.Save)
 ```
 
 Entry: `main.go` loads `config`, merges CLI flags, validates compression/theme,
-resolves the work dir, then loads + validates the image list (fail closed) and
-hands it to `tui.Run`. The TUI owns screens; `pkg/pipeline` owns orchestration.
+resolves the work dir, then loads + validates the image list (fail closed for any
+present-but-invalid list; a *missing* file opens the TUI with an empty list so
+the user can add images or purge the work-dir cache) and hands it to `tui.Run`.
+The TUI owns screens; `pkg/pipeline` owns orchestration.
 
 | Package | Responsibility | Key APIs |
 | ------- | -------------- | -------- |

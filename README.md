@@ -77,8 +77,11 @@ images:
 - Digest-pinned references are accepted; the destination is still a tag, because
   a docker-archive tarball cannot be tagged by digest.
 - Entries are de-duplicated by canonical reference, and the list is validated
-  before anything is pulled. A missing file, an unknown key, an unparseable
+  before anything is pulled. An unreadable file, an unknown key, an unparseable
   reference, or an empty list is a hard error.
+- A **missing** list file is tolerated by the TUI: it opens with an empty list
+  (and a hint) so you can add images with `a` or purge the cache with `p`. The
+  headless `batch` subcommand still requires the file.
 
 ## Bundle layout
 
@@ -115,10 +118,17 @@ override their config values. Run `dockerdownloader -h` for the full list.
 
 | Screen | Keys |
 | ------ | ---- |
-| Review | `space` toggle · `a` add image · `d` delete · `j`/`k` move · `pgup`/`pgdn` page · `g`/`G` jump · `enter` download · `esc` quit |
+| Review | `space` toggle · `a` add image · `d` delete · `j`/`k` move · `pgup`/`pgdn` page · `g`/`G` jump · `p` purge cache · `enter` download · `esc` quit |
+| Purge | `space` toggle · `a` all · `j`/`k` move · `pgup`/`pgdn` page · `g`/`G` jump · `enter` confirm · `esc` back |
 | Download | `esc` cancel (keeps what already downloaded) |
 | Failures | `r` retry failed · `c` continue with what downloaded · `q` abort |
 | Any | `ctrl+t` theme menu · `ctrl+c` quit |
+
+`p` lists the image tarballs cached under `work_dir/images/` so you can delete
+individual ones and reclaim disk; a confirmation screen shows the count and the
+space freed first. Deleting a cached image is safe — it is re-pulled on the next
+run (with or without `-resume`). No persistent `work_dir` means nothing to purge,
+so the key reports that and stays on Review.
 
 ## Configuration
 
@@ -139,7 +149,7 @@ The ones that matter most:
 | `bundle_name` | `images` | Output file is `<name>-bundle.tar.gz`. |
 | `compression` | `gzip` | `zstd` gives smaller bundles. |
 | `min_free_disk_mb` | `2048` | Checked before the download starts. |
-| `work_dir` | `""` | Fixed path enables `resume` and keeps tarballs between runs. |
+| `work_dir` | `""` | Fixed path enables `resume` and keeps tarballs between runs; purge cached tarballs in the TUI with `p`. |
 | `resume` | `false` | Reuse tarballs from a prior run instead of re-pulling. |
 
 ## Development
