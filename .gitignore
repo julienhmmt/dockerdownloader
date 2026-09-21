@@ -9,5 +9,8 @@ go-coverage.log
 # Binary
 dockerdownloader
 
+# GoReleaser output
+dist/
+
 # SonarQube local analysis state (token, admin password, coverage reports)
 .sonar/
