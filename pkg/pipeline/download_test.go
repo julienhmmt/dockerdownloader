@@ -404,6 +404,31 @@ func TestDownload_ResumeRejectsTamperedTarWithStaleContentHash(t *testing.T) {
 	assert.Equal(t, 1, saver.attemptCount("docker.io/repo/cached:1"))
 }
 
+// TestDownload_WritesSidecarsOnSuccessOnly locks in the resume sidecar
+// contract: a successful pull records .digest, .sha256, and .meta beside the
+// tarball, while a failed pull writes none of them.
+func TestDownload_WritesSidecarsOnSuccessOnly(t *testing.T) {
+	refs := []string{"ok/one:1", "bad/two:2"}
+	saver := &fakeSaver{failRefs: map[string]bool{"docker.io/bad/two:2": true}}
+	pl := newTestPipeline(saver, 2)
+	workDir := t.TempDir()
+
+	entries, failures, err := pl.Download(context.Background(), Session{WorkDir: workDir}, refs, nil, nil)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	require.Len(t, failures, 1)
+
+	for _, suffix := range []string{".digest", ".sha256", ".meta"} {
+		_, statErr := os.Stat(entries[0].TarPath + suffix)
+		require.NoError(t, statErr, "successful pull must write %s", suffix)
+	}
+	failTar := filepath.Join(workDir, "images", tarballName("bad/two:2"))
+	for _, suffix := range []string{".digest", ".sha256", ".meta"} {
+		_, statErr := os.Stat(failTar + suffix)
+		assert.True(t, os.IsNotExist(statErr), "failed pull must not write %s", suffix)
+	}
+}
+
 func TestDownload_WritesContentHashSidecar(t *testing.T) {
 	refs := []string{"repo/a:1"}
 	saver := &fakeSaver{}

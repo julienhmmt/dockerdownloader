@@ -182,14 +182,18 @@ func (p *Pipeline) Download(ctx context.Context, session Session, refs []string,
 					DestRef:   destRef,
 					Digest:    digest,
 				}}
-				// Record registry digest + content hash beside the tarball so a
-				// later -resume run can reuse it without re-pulling and still
-				// pin the bundle with verified file bytes.
-				writeResumeSidecars(tarPath, digest, wantMeta)
 			}
 			mu.Unlock()
 
-			if err != nil {
+			if err == nil {
+				// Record registry digest + content hash beside the tarball so a
+				// later -resume run can reuse it without re-pulling and still
+				// pin the bundle with verified file bytes. Done outside the lock:
+				// fileSHA256 re-reads the whole tarball, which would otherwise
+				// serialize every worker for seconds on large images. The
+				// fixed-slot assignment above held the lock, preserving order.
+				writeResumeSidecars(tarPath, digest, wantMeta)
+			} else {
 				p.logger.Errorf("failed to save %s: %v", ref, err)
 			}
 			if progress != nil {
