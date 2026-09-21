@@ -179,6 +179,70 @@ func writeGzipTar(t *testing.T, dir, name string, contents map[string]string) st
 	return path
 }
 
+// dotPrefixed returns contents with every entry name prefixed by "./", as a
+// bundle repacked with `tar czf ... -C dir .` would store them.
+func dotPrefixed(contents map[string]string) map[string]string {
+	out := make(map[string]string, len(contents))
+	for name, data := range contents {
+		out["./"+name] = data
+	}
+	return out
+}
+
+func TestVerify_NormalizesLeadingDotSlash(t *testing.T) {
+	work := t.TempDir()
+	out := t.TempDir()
+	img := writeTemp(t, work, "i.tar", "tar")
+	path, err := Create(Spec{
+		Name:      "c",
+		OutputDir: out,
+		Images:    []ImageEntry{{TarPath: img, SourceRef: "x:1", DestRef: "r/x:1", Digest: "sha256:abc"}},
+	})
+	require.NoError(t, err)
+	contents, _ := readArchive(t, path)
+	repacked := writeGzipTar(t, out, "dotted.tar.gz", dotPrefixed(contents))
+	assert.NoError(t, Verify(repacked))
+}
+
+func TestVerify_RejectsUnlistedDotSlashEntry(t *testing.T) {
+	work := t.TempDir()
+	out := t.TempDir()
+	img := writeTemp(t, work, "i.tar", "tar")
+	path, err := Create(Spec{
+		Name:      "c",
+		OutputDir: out,
+		Images:    []ImageEntry{{TarPath: img, SourceRef: "x:1", DestRef: "r/x:1", Digest: "sha256:abc"}},
+	})
+	require.NoError(t, err)
+	contents, _ := readArchive(t, path)
+	contents["images/extra.tar"] = "smuggled"
+	badPath := writeGzipTar(t, out, "dotted-unlisted.tar.gz", dotPrefixed(contents))
+	err = Verify(badPath)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "images/extra.tar (not listed in sha256sums.txt)")
+}
+
+// TestVerify_RejectsDuplicateNormalizedEntry guards the "./" normalization: a
+// bundle carrying both "name" and "./name" must fail rather than let the second
+// overwrite the first in the digest map.
+func TestVerify_RejectsDuplicateNormalizedEntry(t *testing.T) {
+	work := t.TempDir()
+	out := t.TempDir()
+	img := writeTemp(t, work, "i.tar", "tar")
+	path, err := Create(Spec{
+		Name:      "c",
+		OutputDir: out,
+		Images:    []ImageEntry{{TarPath: img, SourceRef: "x:1", DestRef: "r/x:1", Digest: "sha256:abc"}},
+	})
+	require.NoError(t, err)
+	contents, _ := readArchive(t, path)
+	contents["./images/i.tar"] = contents["images/i.tar"]
+	badPath := writeGzipTar(t, out, "dup.tar.gz", contents)
+	err = Verify(badPath)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate archive entry")
+}
+
 func TestVerify_UnknownExtension(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "foo.zip")

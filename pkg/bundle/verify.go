@@ -109,27 +109,34 @@ func Verify(path string) error {
 		if hdr.Typeflag != tar.TypeReg {
 			continue
 		}
-		switch hdr.Name {
+		name := normalizeEntryName(hdr.Name)
+		// A repack can carry both "name" and "./name"; they are the same logical
+		// file, so a second entry under a normalized name is rejected rather
+		// than silently overwriting the first in the digest map.
+		if _, dup := digests[name]; dup {
+			return fmt.Errorf("duplicate archive entry %q", name)
+		}
+		switch name {
 		case "sha256sums.txt":
 			data, err := readCapped(tr, maxMetadataFileSize)
 			if err != nil {
 				return fmt.Errorf("read sha256sums.txt: %w", err)
 			}
 			sumsBytes = data
-			digests[hdr.Name] = hexSha256(data)
+			digests[name] = hexSha256(data)
 		case "manifest.json":
 			data, err := readCapped(tr, maxMetadataFileSize)
 			if err != nil {
 				return fmt.Errorf("read manifest.json: %w", err)
 			}
 			manifestBytes = data
-			digests[hdr.Name] = hexSha256(data)
+			digests[name] = hexSha256(data)
 		default:
 			h := sha256.New()
 			if _, err := io.Copy(h, tr); err != nil {
-				return fmt.Errorf("read entry %s: %w", hdr.Name, err)
+				return fmt.Errorf("read entry %s: %w", name, err)
 			}
-			digests[hdr.Name] = hex.EncodeToString(h.Sum(nil))
+			digests[name] = hex.EncodeToString(h.Sum(nil))
 		}
 	}
 	if sumsBytes == nil {
@@ -204,6 +211,13 @@ func hexSha256(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// normalizeEntryName drops a single leading "./" from a tar entry name so a
+// bundle repacked with `tar czf ... -C dir .` (which stores "./name") verifies
+// the same as one produced by Create.
+func normalizeEntryName(name string) string {
+	return strings.TrimPrefix(name, "./")
+}
+
 // DiffResult describes the image-level differences between two bundles.
 type DiffResult struct {
 	Added   []string     // refs in b but not in a
@@ -268,7 +282,7 @@ func readManifestImages(path string) (map[string]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read tar: %w", err)
 		}
-		if hdr.Typeflag != tar.TypeReg || hdr.Name != "manifest.json" {
+		if hdr.Typeflag != tar.TypeReg || normalizeEntryName(hdr.Name) != "manifest.json" {
 			continue
 		}
 		prov, err := readCapped(tr, maxMetadataFileSize)
