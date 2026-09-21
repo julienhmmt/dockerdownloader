@@ -57,6 +57,13 @@ func Parse(data []byte) ([]Image, error) {
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(&parsed); err != nil && !errors.Is(err, io.EOF) {
+		// Unknown top-level keys usually mean the config file was passed to
+		// -images: both are YAML, so lead with the shape we expect rather than
+		// burying it under a dump of every offending field.
+		var typeErr *yaml.TypeError
+		if errors.As(err, &typeErr) {
+			return nil, fmt.Errorf("parse: expected a YAML document with a top-level 'images:' key (see images.example.yaml): %w", err)
+		}
 		return nil, fmt.Errorf("parse: %w", err)
 	}
 	if len(parsed.Images) == 0 {

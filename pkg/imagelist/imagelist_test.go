@@ -141,6 +141,16 @@ func TestLoad_ExampleListParses(t *testing.T) {
 	require.NotEmpty(t, imgs)
 }
 
+func TestParse_ConfigFileGivesHint(t *testing.T) {
+	// Passing the config file to -images is an easy mistake (both are YAML);
+	// the error must say what shape the list should have.
+	data, err := os.ReadFile(filepath.Join("..", "..", "config.example.yaml"))
+	require.NoError(t, err)
+	_, err = imagelist.Parse(data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "images.example.yaml")
+}
+
 func TestValidRef(t *testing.T) {
 	tests := []struct {
 		ref  string
