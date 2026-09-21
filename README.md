@@ -150,7 +150,7 @@ The ones that matter most:
 | `compression` | `gzip` | `zstd` gives smaller bundles. |
 | `min_free_disk_mb` | `2048` | Checked before the download starts. |
 | `work_dir` | `""` | Fixed path enables `resume` and keeps tarballs between runs; purge cached tarballs in the TUI with `p`. |
-| `resume` | `false` | Reuse tarballs from a prior run instead of re-pulling. |
+| `resume` | `false` | Reuse tarballs from a prior run instead of re-pulling. Reuse is keyed on source ref, destination, and platform; changing `registry_prefix` or `platform` re-pulls. |
 
 ## Development
 

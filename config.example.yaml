@@ -140,9 +140,11 @@ min_free_disk_mb: 2048
 
 # When true, reuse image tarballs already present under work_dir instead of
 # re-pulling. Only useful with a fixed work_dir (not a temp path).
-# Reuse requires matching content-hash (.sha256) and registry digest (.digest)
-# sidecars from a prior successful pull; older work dirs without content hashes
-# re-pull safely.
+# Reuse is keyed on the source ref, the retagged destination, and the platform:
+# changing registry_prefix or platform re-pulls rather than reusing a tarball
+# whose embedded tag/architecture no longer matches the bundle.
+# Reuse requires matching .digest, .sha256, and .meta sidecars from a prior
+# successful pull; older work dirs without a .meta sidecar re-pull safely.
 # CLI: -resume (flag enables only; cannot turn resume off from config via flag)
 # Default: false
 resume: false

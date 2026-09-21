@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -141,9 +142,12 @@ func (p *Pipeline) Download(ctx context.Context, session Session, refs []string,
 
 			// Resume: reuse a tarball already on disk from a prior run instead of
 			// pulling it again. The digest sidecar restores the manifest digest so
-			// the bundle stays fully pinned.
+			// the bundle stays fully pinned; the meta sidecar gates reuse on the
+			// destination ref and platform, so a settings change re-pulls rather
+			// than bundling a stale tarball under new provenance.
+			wantMeta := resumeMeta{SourceRef: ref, DestRef: destRef, Platform: p.cfg.Platform}
 			if p.cfg.Resume {
-				if digest, ok := p.reusableTarball(tarPath); ok {
+				if digest, ok := p.reusableTarball(tarPath, wantMeta); ok {
 					p.logger.Infof("reusing existing tarball for %s", ref)
 					mu.Lock()
 					completed++
@@ -181,7 +185,7 @@ func (p *Pipeline) Download(ctx context.Context, session Session, refs []string,
 				// Record registry digest + content hash beside the tarball so a
 				// later -resume run can reuse it without re-pulling and still
 				// pin the bundle with verified file bytes.
-				writeResumeSidecars(tarPath, digest)
+				writeResumeSidecars(tarPath, digest, wantMeta)
 			}
 			mu.Unlock()
 
@@ -317,6 +321,23 @@ func contentHashSidecarPath(tarPath string) string {
 	return tarPath + ".sha256"
 }
 
+// metaSidecarPath returns the path of the file recording the settings that
+// shaped a tarball (resume provenance gate).
+func metaSidecarPath(tarPath string) string {
+	return tarPath + ".meta"
+}
+
+// resumeMeta records the settings that shaped a cached tarball. -resume only
+// reuses a tarball whose recorded destination ref and platform match the
+// current run, so changing registry_prefix or platform re-pulls instead of
+// bundling an image whose embedded RepoTag/architecture no longer matches the
+// bundle's provenance.
+type resumeMeta struct {
+	SourceRef string `json:"sourceRef"`
+	DestRef   string `json:"destRef"`
+	Platform  string `json:"platform"`
+}
+
 // fileSHA256 streams path and returns its hex-encoded sha256.
 func fileSHA256(path string) (string, error) {
 	f, err := os.Open(path)
@@ -331,12 +352,16 @@ func fileSHA256(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// writeResumeSidecars records the registry manifest digest and a content hash
-// of the tarball for later -resume runs. Failure is non-fatal: the tarball is
-// still valid; resume just will not reuse it without both sidecars matching.
-func writeResumeSidecars(tarPath, registryDigest string) {
+// writeResumeSidecars records the registry manifest digest, the settings that
+// shaped the tarball, and a content hash for later -resume runs. Failure is
+// non-fatal: the tarball is still valid; resume just will not reuse it without
+// every sidecar present and matching.
+func writeResumeSidecars(tarPath, registryDigest string, meta resumeMeta) {
 	if registryDigest != "" {
 		_ = os.WriteFile(digestSidecarPath(tarPath), []byte(registryDigest), 0o600)
+	}
+	if data, err := json.Marshal(meta); err == nil {
+		_ = os.WriteFile(metaSidecarPath(tarPath), data, 0o600)
 	}
 	sum, err := fileSHA256(tarPath)
 	if err != nil {
@@ -345,14 +370,45 @@ func writeResumeSidecars(tarPath, registryDigest string) {
 	_ = os.WriteFile(contentHashSidecarPath(tarPath), []byte(sum), 0o600)
 }
 
-// reusableTarball reports whether a complete tarball with a recorded registry
-// digest and matching content-hash sidecar already exists at tarPath, returning
-// that registry digest. Reuse requires non-empty file, non-empty .digest,
-// matching .sha256 of file bytes, and tarballComplete — so a tampered or
-// truncated tar is re-pulled. A rejection is logged at debug level under -v.
-func (p *Pipeline) reusableTarball(tarPath string) (string, bool) {
+// readResumeMeta reads and parses the meta sidecar at tarPath. It reports false
+// when the sidecar is missing, malformed, or lacks a source/dest ref — a
+// tarball from an older binary has no meta and must be treated as not reusable,
+// or the first run after upgrading would reintroduce the stale-bundle bug.
+func readResumeMeta(tarPath string) (resumeMeta, bool) {
+	data, err := os.ReadFile(metaSidecarPath(tarPath))
+	if err != nil {
+		return resumeMeta{}, false
+	}
+	var meta resumeMeta
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return resumeMeta{}, false
+	}
+	if meta.SourceRef == "" || meta.DestRef == "" {
+		return resumeMeta{}, false
+	}
+	return meta, true
+}
+
+// reusableTarball reports whether a complete tarball already exists at tarPath
+// with a recorded registry digest, matching content-hash sidecar, and a meta
+// sidecar matching want, returning that registry digest. Reuse requires
+// non-empty file, non-empty .digest, matching .sha256 of file bytes, a meta
+// matching the current destination ref and platform, and tarballComplete — so a
+// tampered, truncated, or settings-mismatched tar is re-pulled. A rejection is
+// logged at debug level under -v.
+func (p *Pipeline) reusableTarball(tarPath string, want resumeMeta) (string, bool) {
 	info, err := os.Stat(tarPath)
 	if err != nil || info.IsDir() || info.Size() == 0 {
+		return "", false
+	}
+	meta, ok := readResumeMeta(tarPath)
+	if !ok {
+		p.logger.Debugf("resume: %s has no matching metadata sidecar, re-pulling", tarPath)
+		return "", false
+	}
+	if meta != want {
+		p.logger.Debugf("resume: %s was built for %s on %s, re-pulling for %s on %s",
+			tarPath, meta.DestRef, meta.Platform, want.DestRef, want.Platform)
 		return "", false
 	}
 	data, err := os.ReadFile(digestSidecarPath(tarPath))

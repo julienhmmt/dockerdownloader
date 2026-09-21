@@ -3,6 +3,7 @@ package pipeline
 import (
 	"archive/tar"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/julienhmmt/dockerdownloader/pkg/bundle"
 	"github.com/julienhmmt/dockerdownloader/pkg/config"
+	"github.com/julienhmmt/dockerdownloader/pkg/imagelist"
 	"github.com/julienhmmt/dockerdownloader/pkg/log"
 	"github.com/julienhmmt/dockerdownloader/pkg/registry"
 )
@@ -151,13 +153,27 @@ func TestDownload_ReportsProgressOncePerImage(t *testing.T) {
 	assert.Equal(t, int32(len(refs)), maxCurrent)
 }
 
-// writeResumeSidecarsForTest writes .digest and a matching .sha256 for path.
-func writeResumeSidecarsForTest(t *testing.T, tarPath, regDigest string) {
+// writeResumeSidecarsForTest writes .digest, .meta, and a matching .sha256 for
+// path, as a prior successful run would.
+func writeResumeSidecarsForTest(t *testing.T, tarPath, regDigest string, meta resumeMeta) {
 	t.Helper()
 	require.NoError(t, os.WriteFile(tarPath+".digest", []byte(regDigest), 0o644))
+	data, err := json.Marshal(meta)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(tarPath+".meta", data, 0o644))
 	sum, err := fileSHA256(tarPath)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(tarPath+".sha256", []byte(sum), 0o644))
+}
+
+// resumeMetaFor returns the provenance a successful pull of ref would record
+// under pl's current destination prefix and platform.
+func resumeMetaFor(pl *Pipeline, ref string) resumeMeta {
+	return resumeMeta{
+		SourceRef: ref,
+		DestRef:   imagelist.Retag(ref, pl.cfg.RegistryPrefix),
+		Platform:  pl.cfg.Platform,
+	}
 }
 
 func TestDownload_ResumeReusesExistingTarball(t *testing.T) {
@@ -167,13 +183,13 @@ func TestDownload_ResumeReusesExistingTarball(t *testing.T) {
 	pl.cfg.Resume = true
 	workDir := t.TempDir()
 
-	// Pre-seed a valid tarball + digest + content-hash sidecars for the first
-	// ref, as a prior successful run would.
+	// Pre-seed a valid tarball + digest + meta + content-hash sidecars for the
+	// first ref, as a prior successful run would.
 	imagesDir := filepath.Join(workDir, "images")
 	require.NoError(t, os.MkdirAll(imagesDir, 0o755))
 	cachedTar := filepath.Join(imagesDir, tarballName("repo/cached:1"))
 	writeMinimalTar(t, cachedTar)
-	writeResumeSidecarsForTest(t, cachedTar, "sha256:cached")
+	writeResumeSidecarsForTest(t, cachedTar, "sha256:cached", resumeMetaFor(pl, "repo/cached:1"))
 
 	entries, failures, err := pl.Download(context.Background(), Session{WorkDir: workDir}, refs, nil, nil)
 	require.NoError(t, err)
@@ -184,6 +200,98 @@ func TestDownload_ResumeReusesExistingTarball(t *testing.T) {
 	assert.Equal(t, "sha256:cached", entries[0].Digest)
 	// The fresh ref is pulled normally.
 	assert.Equal(t, 1, saver.attemptCount("docker.io/repo/fresh:2"))
+}
+
+func TestDownload_ResumeReusesWhenSettingsMatch(t *testing.T) {
+	refs := []string{"repo/cached:1"}
+	saver := &fakeSaver{}
+	pl := newTestPipeline(saver, 1)
+	pl.cfg.Resume = true
+	pl.cfg.Platform = "linux/arm64"
+	workDir := t.TempDir()
+	imagesDir := filepath.Join(workDir, "images")
+	require.NoError(t, os.MkdirAll(imagesDir, 0o755))
+	cachedTar := filepath.Join(imagesDir, tarballName("repo/cached:1"))
+	writeMinimalTar(t, cachedTar)
+	writeResumeSidecarsForTest(t, cachedTar, "sha256:cached", resumeMetaFor(pl, "repo/cached:1"))
+
+	entries, failures, err := pl.Download(context.Background(), Session{WorkDir: workDir}, refs, nil, nil)
+	require.NoError(t, err)
+	assert.Empty(t, failures)
+	require.Len(t, entries, 1)
+	assert.Equal(t, 0, saver.attemptCount("docker.io/repo/cached:1"), "matching settings must reuse")
+	assert.Equal(t, "sha256:cached", entries[0].Digest)
+}
+
+func TestDownload_ResumeRejectsTarballBuiltForAnotherDestRef(t *testing.T) {
+	refs := []string{"repo/cached:1"}
+	saver := &fakeSaver{}
+	pl := newTestPipeline(saver, 1)
+	pl.cfg.Resume = true
+	workDir := t.TempDir()
+	imagesDir := filepath.Join(workDir, "images")
+	require.NoError(t, os.MkdirAll(imagesDir, 0o755))
+	cachedTar := filepath.Join(imagesDir, tarballName("repo/cached:1"))
+	writeMinimalTar(t, cachedTar)
+	// Recorded for a different registry prefix than the current run uses.
+	stale := resumeMetaFor(pl, "repo/cached:1")
+	stale.DestRef = "rgy.other/docker.io/repo/cached:1"
+	writeResumeSidecarsForTest(t, cachedTar, "sha256:cached", stale)
+
+	entries, failures, err := pl.Download(context.Background(), Session{WorkDir: workDir}, refs, nil, nil)
+	require.NoError(t, err)
+	assert.Empty(t, failures)
+	require.Len(t, entries, 1)
+	assert.Equal(t, 1, saver.attemptCount("docker.io/repo/cached:1"), "dest ref change must re-pull")
+	assert.Equal(t, "sha256:fake", entries[0].Digest)
+	assert.Equal(t, imagelist.Retag("repo/cached:1", "rgy.local"), entries[0].DestRef)
+}
+
+func TestDownload_ResumeRejectsTarballBuiltForAnotherPlatform(t *testing.T) {
+	refs := []string{"repo/cached:1"}
+	saver := &fakeSaver{}
+	pl := newTestPipeline(saver, 1)
+	pl.cfg.Resume = true
+	pl.cfg.Platform = "linux/arm64"
+	workDir := t.TempDir()
+	imagesDir := filepath.Join(workDir, "images")
+	require.NoError(t, os.MkdirAll(imagesDir, 0o755))
+	cachedTar := filepath.Join(imagesDir, tarballName("repo/cached:1"))
+	writeMinimalTar(t, cachedTar)
+	stale := resumeMetaFor(pl, "repo/cached:1")
+	stale.Platform = "linux/amd64"
+	writeResumeSidecarsForTest(t, cachedTar, "sha256:cached", stale)
+
+	entries, failures, err := pl.Download(context.Background(), Session{WorkDir: workDir}, refs, nil, nil)
+	require.NoError(t, err)
+	assert.Empty(t, failures)
+	require.Len(t, entries, 1)
+	assert.Equal(t, 1, saver.attemptCount("docker.io/repo/cached:1"), "platform change must re-pull")
+	assert.Equal(t, "sha256:fake", entries[0].Digest)
+}
+
+func TestDownload_ResumeRejectsTarballWithoutMetaSidecar(t *testing.T) {
+	refs := []string{"repo/cached:1"}
+	saver := &fakeSaver{}
+	pl := newTestPipeline(saver, 1)
+	pl.cfg.Resume = true
+	workDir := t.TempDir()
+	imagesDir := filepath.Join(workDir, "images")
+	require.NoError(t, os.MkdirAll(imagesDir, 0o755))
+	cachedTar := filepath.Join(imagesDir, tarballName("repo/cached:1"))
+	writeMinimalTar(t, cachedTar)
+	// A legacy work dir: digest + content hash, but no meta sidecar.
+	require.NoError(t, os.WriteFile(cachedTar+".digest", []byte("sha256:cached"), 0o644))
+	sum, err := fileSHA256(cachedTar)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(cachedTar+".sha256", []byte(sum), 0o644))
+
+	entries, failures, err := pl.Download(context.Background(), Session{WorkDir: workDir}, refs, nil, nil)
+	require.NoError(t, err)
+	assert.Empty(t, failures)
+	require.Len(t, entries, 1)
+	assert.Equal(t, 1, saver.attemptCount("docker.io/repo/cached:1"), "legacy cache without meta must re-pull")
+	assert.Equal(t, "sha256:fake", entries[0].Digest)
 }
 
 func TestDownload_ResumeRejectsTruncatedTarball(t *testing.T) {
@@ -198,7 +306,7 @@ func TestDownload_ResumeRejectsTruncatedTarball(t *testing.T) {
 	require.NoError(t, os.MkdirAll(imagesDir, 0o755))
 	cachedTar := filepath.Join(imagesDir, tarballName("repo/cached:1"))
 	require.NoError(t, os.WriteFile(cachedTar, []byte("not-a-complete-tar"), 0o644))
-	writeResumeSidecarsForTest(t, cachedTar, "sha256:cached")
+	writeResumeSidecarsForTest(t, cachedTar, "sha256:cached", resumeMetaFor(pl, "repo/cached:1"))
 
 	entries, failures, err := pl.Download(context.Background(), Session{WorkDir: workDir}, refs, nil, nil)
 	require.NoError(t, err)
@@ -282,7 +390,7 @@ func TestDownload_ResumeRejectsTamperedTarWithStaleContentHash(t *testing.T) {
 	require.NoError(t, os.MkdirAll(imagesDir, 0o755))
 	cachedTar := filepath.Join(imagesDir, tarballName("repo/cached:1"))
 	writeMinimalTar(t, cachedTar)
-	writeResumeSidecarsForTest(t, cachedTar, "sha256:cached")
+	writeResumeSidecarsForTest(t, cachedTar, "sha256:cached", resumeMetaFor(pl, "repo/cached:1"))
 	// Tamper bytes but leave the old content hash (attacker scenario).
 	data, err := os.ReadFile(cachedTar)
 	require.NoError(t, err)

@@ -87,7 +87,11 @@ The TUI owns screens; `pkg/pipeline` owns orchestration.
 8. **A bundle always has images**: `bundle.Create` rejects an empty image set,
    and the TUI refuses to start a download with nothing selected.
 9. **Resume**: with a fixed `-work-dir` + `-resume`, reuse existing tarballs and
-   `.digest` sidecars instead of re-pulling. `Bundle` deliberately does **not**
+   their `.digest`/`.sha256`/`.meta` sidecars instead of re-pulling. Reuse is
+   keyed on (source ref, dest ref, platform): changing `registry_prefix` or
+   `platform` re-pulls rather than bundling a tarball whose embedded RepoTag or
+   architecture no longer matches the bundle's provenance. A tarball with no
+   `.meta` (older binary) is not reused. `Bundle` deliberately does **not**
    delete work-dir tarballs, so `-resume` can rebuild without re-pulling.
 
 ## Bundle layout

@@ -75,10 +75,10 @@ func (p *Pipeline) ListCache() ([]CacheEntry, error) {
 	return entries, nil
 }
 
-// PurgeCache deletes the given cache entries — each tarball plus its .digest
-// and .sha256 sidecars — and returns how many tarballs were removed and the
-// bytes freed. A missing file is not an error; every entry is attempted so one
-// failure cannot stop the rest, and the failures are joined.
+// PurgeCache deletes the given cache entries — each tarball plus its .digest,
+// .sha256, and .meta sidecars — and returns how many tarballs were removed and
+// the bytes freed. A missing file is not an error; every entry is attempted so
+// one failure cannot stop the rest, and the failures are joined.
 func (p *Pipeline) PurgeCache(entries []CacheEntry) (removed int, freed int64, err error) {
 	var errs []error
 	for _, entry := range entries {
@@ -99,6 +99,7 @@ func (p *Pipeline) PurgeCache(entries []CacheEntry) (removed int, freed int64, e
 		// partly purged, and an undeletable one must not keep the tarball.
 		_ = os.Remove(digestSidecarPath(entry.TarPath))
 		_ = os.Remove(contentHashSidecarPath(entry.TarPath))
+		_ = os.Remove(metaSidecarPath(entry.TarPath))
 	}
 	return removed, freed, errors.Join(errs...)
 }
