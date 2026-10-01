@@ -237,6 +237,12 @@ func (m model) handleReviewKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if len(m.reviewImages) > 0 {
 			m.reviewImages[m.reviewCursor].Selected = !m.reviewImages[m.reviewCursor].Selected
 		}
+	case "A":
+		selectAll := m.countSelected() != len(m.reviewImages)
+		for index := range m.reviewImages {
+			m.reviewImages[index].Selected = selectAll
+		}
+		m.clearStatus()
 	case "a":
 		m.clearStatus()
 		m.addInput.SetValue("")

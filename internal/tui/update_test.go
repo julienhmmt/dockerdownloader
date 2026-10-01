@@ -193,6 +193,34 @@ func TestHandleReviewKey_SpaceTogglesSelection(t *testing.T) {
 	assert.Equal(t, 0, m2.countSelected())
 }
 
+func TestHandleReviewKey_ATogglesAllSelection(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		selected []bool
+		want     int
+	}{
+		{"empty", nil, 0},
+		{"none selected", []bool{false, false}, 2},
+		{"some selected", []bool{true, false}, 2},
+		{"all selected", []bool{true, true}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTestModel()
+			m.reviewImages = make([]imagelist.Image, len(tc.selected))
+			for index, selected := range tc.selected {
+				m.reviewImages[index].Selected = selected
+			}
+			got, cmd := m.handleReviewKey(keyPress("A"))
+			m = got.(model)
+			assert.Equal(t, tc.want, m.countSelected())
+			assert.Equal(t, stateReview, m.state)
+			assert.Nil(t, cmd)
+			got, _ = m.handleReviewKey(keyPress("A"))
+			assert.Equal(t, len(tc.selected)-tc.want, got.(model).countSelected())
+		})
+	}
+}
+
 func TestHandleReviewKey_DeleteRemovesEntry(t *testing.T) {
 	m := newTestModel()
 	m.state = stateReview

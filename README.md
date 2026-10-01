@@ -119,7 +119,7 @@ override their config values. Run `dockerdownloader -h` for the full list.
 
 | Screen | Keys |
 | ------ | ---- |
-| Review | `space` toggle · `a` add image · `d` delete · `j`/`k` move · `pgup`/`pgdn` page · `g`/`G` jump · `p` purge cache · `enter` download · `esc` quit |
+| Review | `space` toggle · `A` select/deselect all · `a` add image · `d` delete · `j`/`k` move · `pgup`/`pgdn` page · `g`/`G` jump · `p` purge cache · `enter` download · `esc` quit |
 | Purge | `space` toggle · `a` all · `j`/`k` move · `pgup`/`pgdn` page · `g`/`G` jump · `enter` confirm · `esc` back |
 | Download | `esc` cancel (keeps what already downloaded) |
 | Failures | `j`/`k` move · `r` retry failed · `c` continue with what downloaded · `q` abort |

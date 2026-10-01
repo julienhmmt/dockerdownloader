@@ -131,7 +131,7 @@ func (m model) viewReview() string {
 	meta := m.styles.muted.Render(fmt.Sprintf("prefix %s · platform %s · out %s",
 		m.cfg.RegistryPrefix, m.cfg.Platform, m.cfg.OutputDir))
 	body := lipgloss.JoinVertical(lipgloss.Left, rows.String(), "", meta)
-	help := "space toggle · a add · d delete · j/k move · pgup/pgdn page · g/G jump · p purge · enter download · ctrl+t themes · esc quit"
+	help := "space toggle · A all · a add · d delete · j/k move · pgup/pgdn page · g/G jump · p purge · enter download · ctrl+t themes · esc quit"
 	if len(m.reviewImages) == 0 {
 		help = "a add · p purge · ctrl+t themes · esc quit"
 	}
