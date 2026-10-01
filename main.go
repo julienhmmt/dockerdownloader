@@ -117,7 +117,7 @@ func main() {
 		cfg.LogLevel = *logLevel
 		cfg.Verbose = true
 	}
-	if cfg.LogFile == "" {
+	if cfg.LogFile == "" || flagPassed(flag.CommandLine, "log-file") {
 		cfg.LogFile = *logFile
 	}
 	if *theme != "" {
@@ -190,16 +190,20 @@ func loadImages(cfg config.Config) ([]imagelist.Image, error) {
 // fs, a missing file is an error (a typo'd path must not silently fall back to
 // defaults); otherwise the default-path probe tolerates a missing file.
 func loadConfig(fs *flag.FlagSet, path string) (config.Config, error) {
-	explicit := false
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "config" {
-			explicit = true
-		}
-	})
-	if explicit {
+	if flagPassed(fs, "config") {
 		return config.LoadRequired(path)
 	}
 	return config.Load(path)
+}
+
+func flagPassed(fs *flag.FlagSet, name string) bool {
+	var passed bool
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			passed = true
+		}
+	})
+	return passed
 }
 
 // applyProxyEnv fills cfg.HTTPSProxy from HTTP_PROXY/HTTPS_PROXY when it was not

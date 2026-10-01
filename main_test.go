@@ -1,7 +1,9 @@
 package main
 
 import (
+	"flag"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -10,6 +12,48 @@ import (
 
 	"github.com/julienhmmt/dockerdownloader/pkg/config"
 )
+
+func TestCLI_Process(_ *testing.T) {
+	if os.Getenv("DOCKERDOWNLOADER_TEST_CLI") != "1" {
+		return
+	}
+	os.Args = append([]string{os.Args[0]}, flag.Args()...)
+	flag.CommandLine = flag.NewFlagSet("dockerdownloader", flag.ExitOnError)
+	main()
+}
+
+func runCLI(t *testing.T, args []string) ([]byte, error) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], append([]string{"-test.run=^TestCLI_Process$", "--"}, args...)...)
+	cmd.Env = append(os.Environ(), "DOCKERDOWNLOADER_TEST_CLI=1")
+	return cmd.CombinedOutput()
+}
+
+func TestCLI_LogFilePrecedence(t *testing.T) {
+	for _, value := range []string{"", "override.log", "dockerdownloader.log"} {
+		t.Run("flag="+value, func(t *testing.T) {
+			dir := t.TempDir()
+			configPath := filepath.Join(dir, "config.yaml")
+			configured := filepath.Join(dir, "configured.log")
+			require.NoError(t, os.WriteFile(configPath, []byte("verbose: true\nlog_file: "+configured+"\nwork_dir: "+dir+"\n"), 0o600))
+			args := []string{"-config", configPath, "-images", dir}
+			want := configured
+			if value != "" {
+				want = filepath.Join(dir, value)
+				args = append(args, "-log-file", want)
+			}
+			output, err := runCLI(t, args)
+			require.Error(t, err, "%s", output)
+			assert.Contains(t, string(output), "read image list")
+			_, err = os.Stat(want)
+			assert.NoError(t, err, "logging must use the selected path")
+			if value != "" {
+				_, err = os.Stat(configured)
+				assert.ErrorIs(t, err, os.ErrNotExist)
+			}
+		})
+	}
+}
 
 func TestLoadImagesForTUI(t *testing.T) {
 	dir := t.TempDir()
