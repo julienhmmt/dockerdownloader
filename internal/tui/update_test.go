@@ -26,6 +26,20 @@ func TestNewModel_StartsOnReviewWithTheLoadedList(t *testing.T) {
 	assert.Empty(t, m.session.WorkDir, "no work dir until a download starts")
 }
 
+func TestProgressMsg_OutOfOrderKeepsCountMonotonic(t *testing.T) {
+	m := newTestModel()
+	m.state = stateDownloading
+	for _, tc := range []struct{ current, want int }{{2, 2}, {1, 2}, {3, 3}} {
+		m.imageProgress["x:1"] = imageProgress{written: 100}
+		got, cmd := m.Update(progressMsg{current: tc.current, total: 3, ref: "x:1"})
+		m = got.(model)
+		assert.Equal(t, tc.want, m.downCurrent)
+		assert.Equal(t, 3, m.downTotal)
+		assert.NotContains(t, m.imageProgress, "x:1")
+		assert.NotNil(t, cmd)
+	}
+}
+
 func TestDoneMsg_MovesToDone(t *testing.T) {
 	m := newModel(config.Default(), log.Discard(), testImages())
 	m.state = stateBundling

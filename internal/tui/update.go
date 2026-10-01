@@ -36,7 +36,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.state != stateDownloading {
 			return m, nil
 		}
-		m.downCurrent, m.downTotal = typed.current, typed.total
+		m.downCurrent, m.downTotal = max(m.downCurrent, typed.current), typed.total
 		delete(m.imageProgress, typed.ref)
 		return m, waitForActivity(m.activity)
 	case byteProgressMsg:
