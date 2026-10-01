@@ -55,6 +55,64 @@ func TestCLI_LogFilePrecedence(t *testing.T) {
 	}
 }
 
+func TestDownloadFlags_PreserveConfigAndApplyOverrides(t *testing.T) {
+	configured := config.Default()
+	configured.OutputDir, configured.Platform, configured.LogFile = "configured-out", "linux/arm64", "configured.log"
+	configured.Resume, configured.Concurrency, configured.Retries, configured.MinFreeDiskMB = true, 8, 4, 4096
+	for _, tc := range []struct {
+		name                       string
+		args                       []string
+		output, platform, logFile  string
+		concurrency, retries, free int
+	}{
+		{"config only", nil, "configured-out", "linux/arm64", "configured.log", 8, 4, 4096},
+		{"overrides", []string{"-output=cli-out", "-platform=linux/amd64", "-log-file=cli.log", "-concurrency=2", "-retries=0", "-min-free-mb=0"}, "cli-out", "linux/amd64", "cli.log", 2, 0, 0},
+		{"sentinels", []string{"-output=", "-platform=", "-concurrency=0", "-retries=-1", "-min-free-mb=-1", "-resume=false"}, "configured-out", "linux/arm64", "configured.log", 8, 4, 4096},
+		{"explicit log default", []string{"-log-file=dockerdownloader.log"}, "configured-out", "linux/arm64", "dockerdownloader.log", 8, 4, 4096},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := flag.NewFlagSet("download", flag.ContinueOnError)
+			values := registerDownloadFlags(fs)
+			require.NoError(t, fs.Parse(tc.args))
+			got := applyDownloadFlags(configured, *values, fs)
+			want := configured
+			want.OutputDir, want.Platform, want.LogFile = tc.output, tc.platform, tc.logFile
+			want.Concurrency, want.Retries, want.MinFreeDiskMB = tc.concurrency, tc.retries, tc.free
+			assert.Equal(t, want, got)
+		})
+	}
+}
+
+func TestCLI_BatchDownloadFlags(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	configuredWork, configuredOut := filepath.Join(dir, "configured-work"), filepath.Join(dir, "configured-out")
+	require.NoError(t, os.WriteFile(configPath, []byte("work_dir: "+configuredWork+"\noutput_dir: "+configuredOut+"\n"), 0o600))
+	images := filepath.Join(dir, "images.yaml")
+	require.NoError(t, os.WriteFile(images, []byte("images: []\n"), 0o600))
+	work, out := filepath.Join(dir, "work"), filepath.Join(dir, "out")
+	output, err := runCLI(t, []string{"batch", "-config", configPath, "-output", out, "-work-dir", work,
+		"-platform", "linux/arm64", "-resume", "-min-free-mb", "0", "-retries", "0", "-concurrency", "2", "-compression", "zstd", images})
+	require.Error(t, err, "%s", output)
+	assert.Contains(t, string(output), "no images listed")
+	for _, path := range []string{work, out} {
+		_, err := os.Stat(path)
+		assert.NoError(t, err)
+	}
+	for _, path := range []string{configuredWork, configuredOut} {
+		_, err := os.Stat(path)
+		assert.ErrorIs(t, err, os.ErrNotExist)
+	}
+}
+
+func TestCLI_BatchHelpListsDownloadFlags(t *testing.T) {
+	output, err := runCLI(t, []string{"batch", "-h"})
+	require.NoError(t, err, "%s", output)
+	for _, name := range []string{"output", "name", "work-dir", "temp-dir", "concurrency", "retries", "registry-prefix", "platform", "resume", "registry-auth", "compression", "min-free-mb", "proxy", "v", "log-level", "log-file"} {
+		assert.Contains(t, string(output), "  -"+name)
+	}
+}
+
 func TestLoadImagesForTUI(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name, body string) string {

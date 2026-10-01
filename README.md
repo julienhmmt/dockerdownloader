@@ -113,7 +113,15 @@ Every config field has a flag. `-config` and `-images` are the common ones;
 `-registry-prefix`, `-platform`, `-name`, `-output`, `-work-dir`,
 `-concurrency`, `-retries`, `-compression`, `-min-free-mb`, `-proxy`,
 `-registry-auth`, `-resume`, `-theme`, `-v`, `-log-level`, `-log-file` all
-override their config values. Run `dockerdownloader -h` for the full list.
+override their config values. Download and logging flags work in both the TUI
+and `batch`; `-images` and `-theme` are TUI-only. In `batch`, put flags before
+the positional image list:
+
+```sh
+dockerdownloader batch -output archives -work-dir ./cache -resume -platform linux/arm64 images.yaml
+```
+
+Run `dockerdownloader -h` or `dockerdownloader batch -h` for the full flag list.
 
 ## TUI keys
 

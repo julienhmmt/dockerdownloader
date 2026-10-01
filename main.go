@@ -37,22 +37,7 @@ func main() {
 	}
 	configPath := flag.String("config", config.DefaultPath(), "path to config file")
 	imagesPath := flag.String("images", "", "override the image list file (default: images_file from config)")
-	outputDir := flag.String("output", "", "override output directory for bundles")
-	bundleName := flag.String("name", "", "override the bundle name (output file <name>-bundle.tar.gz)")
-	workDir := flag.String("work-dir", "", "override work directory for intermediate files (image tarballs)")
-	tempDir := flag.String("temp-dir", "", "override the parent directory for temporary work dirs (default: system temp dir, e.g. /tmp)")
-	concurrency := flag.Int("concurrency", 0, "override max parallel image downloads (default 4)")
-	retries := flag.Int("retries", -1, "override retry attempts per failed image pull (default 2)")
-	prefix := flag.String("registry-prefix", "", "override the private registry prefix")
-	platform := flag.String("platform", "", "override the image platform (e.g. linux/amd64)")
-	resume := flag.Bool("resume", false, "reuse image tarballs already present in a persistent work dir")
-	registryAuth := flag.Bool("registry-auth", false, "enable authenticated pulls from private registries using the default Docker keychain ($DOCKER_CONFIG or ~/.docker/config.json)")
-	compression := flag.String("compression", "", "bundle compression: gzip (default) or zstd")
-	minFreeDiskMB := flag.Int("min-free-mb", -1, "minimum free disk space in MiB before download (0 disables)")
-	proxy := flag.String("proxy", "", "override proxy URL (e.g. http://proxy.domain.local:3128)")
-	verbose := flag.Bool("v", false, "enable verbose logging (shortcut for --log-level=debug)")
-	logLevel := flag.String("log-level", "", "set log level: silent, info, or debug (default: info)")
-	logFile := flag.String("log-file", "dockerdownloader.log", "path for log output")
+	values := registerDownloadFlags(flag.CommandLine)
 	theme := flag.String("theme", "", "TUI theme: auto (default, follow terminal), light, dark, high-contrast, ocean, or matrix")
 	flag.Parse()
 
@@ -64,61 +49,11 @@ func main() {
 	if *imagesPath != "" {
 		cfg.ImagesFile = *imagesPath
 	}
-	if *outputDir != "" {
-		cfg.OutputDir = *outputDir
-	}
-	if *bundleName != "" {
-		cfg.BundleName = *bundleName
-	}
-	if *workDir != "" {
-		cfg.WorkDir = *workDir
-	}
-	if *tempDir != "" {
-		cfg.TempDir = *tempDir
-	}
+	cfg = applyProxyEnv(applyDownloadFlags(cfg, *values, flag.CommandLine))
 	cfg, err = resolveWorkDir(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
-	}
-	if *concurrency > 0 {
-		cfg.Concurrency = *concurrency
-	}
-	if *retries >= 0 {
-		cfg.Retries = *retries
-	}
-	if *prefix != "" {
-		cfg.RegistryPrefix = *prefix
-	}
-	if *platform != "" {
-		cfg.Platform = *platform
-	}
-	if *resume {
-		cfg.Resume = true
-	}
-	if *registryAuth {
-		cfg.RegistryAuth = true
-	}
-	if *compression != "" {
-		cfg.Compression = *compression
-	}
-	if *minFreeDiskMB >= 0 {
-		cfg.MinFreeDiskMB = *minFreeDiskMB
-	}
-	if *proxy != "" {
-		cfg.HTTPSProxy = *proxy
-	}
-	cfg = applyProxyEnv(cfg)
-	if *verbose {
-		cfg.Verbose = true
-		cfg.LogLevel = "debug"
-	}
-	if *logLevel != "" {
-		cfg.LogLevel = *logLevel
-		cfg.Verbose = true
-	}
-	if cfg.LogFile == "" || flagPassed(flag.CommandLine, "log-file") {
-		cfg.LogFile = *logFile
 	}
 	if *theme != "" {
 		cfg.Theme = *theme
@@ -196,6 +131,81 @@ func loadConfig(fs *flag.FlagSet, path string) (config.Config, error) {
 	return config.Load(path)
 }
 
+func registerDownloadFlags(fs *flag.FlagSet) *config.Config {
+	values := new(config.Config)
+	fs.StringVar(&values.OutputDir, "output", "", "override output directory for bundles")
+	fs.StringVar(&values.BundleName, "name", "", "override the bundle name (output file <name>-bundle.tar.<ext>)")
+	fs.StringVar(&values.WorkDir, "work-dir", "", "override work directory for intermediate files (image tarballs)")
+	fs.StringVar(&values.TempDir, "temp-dir", "", "override the parent directory for temporary work dirs (default: system temp dir, e.g. /tmp)")
+	fs.IntVar(&values.Concurrency, "concurrency", 0, "override max parallel image downloads (default 4)")
+	fs.IntVar(&values.Retries, "retries", -1, "override retry attempts per failed image pull (default 2)")
+	fs.StringVar(&values.RegistryPrefix, "registry-prefix", "", "override the private registry prefix")
+	fs.StringVar(&values.Platform, "platform", "", "override the image platform (e.g. linux/amd64)")
+	fs.BoolVar(&values.Resume, "resume", false, "reuse image tarballs already present in a persistent work dir")
+	fs.BoolVar(&values.RegistryAuth, "registry-auth", false, "enable authenticated pulls from private registries using the default Docker keychain ($DOCKER_CONFIG or ~/.docker/config.json)")
+	fs.StringVar(&values.Compression, "compression", "", "bundle compression: gzip (default) or zstd")
+	fs.IntVar(&values.MinFreeDiskMB, "min-free-mb", -1, "minimum free disk space in MiB before download (0 disables)")
+	fs.StringVar(&values.HTTPSProxy, "proxy", "", "override proxy URL (e.g. http://proxy.domain.local:3128)")
+	fs.BoolVar(&values.Verbose, "v", false, "enable verbose logging (shortcut for --log-level=debug)")
+	fs.StringVar(&values.LogLevel, "log-level", "", "set log level: silent, info, or debug (default: info)")
+	fs.StringVar(&values.LogFile, "log-file", "dockerdownloader.log", "path for log output")
+	return values
+}
+
+func applyDownloadFlags(cfg, values config.Config, fs *flag.FlagSet) config.Config {
+	if values.OutputDir != "" {
+		cfg.OutputDir = values.OutputDir
+	}
+	if values.BundleName != "" {
+		cfg.BundleName = values.BundleName
+	}
+	if values.WorkDir != "" {
+		cfg.WorkDir = values.WorkDir
+	}
+	if values.TempDir != "" {
+		cfg.TempDir = values.TempDir
+	}
+	if values.Concurrency > 0 {
+		cfg.Concurrency = values.Concurrency
+	}
+	if values.Retries >= 0 {
+		cfg.Retries = values.Retries
+	}
+	if values.RegistryPrefix != "" {
+		cfg.RegistryPrefix = values.RegistryPrefix
+	}
+	if values.Platform != "" {
+		cfg.Platform = values.Platform
+	}
+	if values.Resume {
+		cfg.Resume = true
+	}
+	if values.RegistryAuth {
+		cfg.RegistryAuth = true
+	}
+	if values.Compression != "" {
+		cfg.Compression = values.Compression
+	}
+	if values.MinFreeDiskMB >= 0 {
+		cfg.MinFreeDiskMB = values.MinFreeDiskMB
+	}
+	if values.HTTPSProxy != "" {
+		cfg.HTTPSProxy = values.HTTPSProxy
+	}
+	if values.Verbose {
+		cfg.Verbose = true
+		cfg.LogLevel = "debug"
+	}
+	if values.LogLevel != "" {
+		cfg.LogLevel = values.LogLevel
+		cfg.Verbose = true
+	}
+	if cfg.LogFile == "" || flagPassed(fs, "log-file") {
+		cfg.LogFile = values.LogFile
+	}
+	return cfg
+}
+
 func flagPassed(fs *flag.FlagSet, name string) bool {
 	var passed bool
 	fs.Visit(func(f *flag.Flag) {
@@ -243,12 +253,13 @@ func resolveWorkDir(cfg config.Config) (config.Config, error) {
 }
 
 // runBatch runs the batch subcommand: `dockerdownloader batch [-config path] <images.yaml>`.
-// It downloads every image in the YAML list headlessly. All settings other than
-// the config path and the list path come from the config file (registry prefix,
-// output dir, etc.).
+// It downloads every image in the YAML list headlessly. Download and logging
+// flags override the config file with the same precedence as the TUI path;
+// the image list remains a positional argument.
 func runBatch(args []string) {
 	fs := flag.NewFlagSet("batch", flag.ExitOnError)
 	configPath := fs.String("config", config.DefaultPath(), "path to config file")
+	values := registerDownloadFlags(fs)
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
@@ -264,7 +275,7 @@ func runBatch(args []string) {
 		os.Exit(1)
 	}
 	cfg.ImagesFile = rest[0]
-	cfg = applyProxyEnv(cfg)
+	cfg = applyProxyEnv(applyDownloadFlags(cfg, *values, fs))
 	if err := bundle.ValidateCompression(cfg.Compression); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)

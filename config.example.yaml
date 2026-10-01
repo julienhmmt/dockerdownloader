@@ -198,8 +198,8 @@ log_level: "info"
 # Path for log output when verbose logging is on. Opened append-only with mode
 # 0600 (image refs / proxy hosts are not world-readable).
 #
-# Merge note: if log_file is non-empty in this file, it wins over the CLI
-# -log-file flag. The CLI default is used only when this field is empty.
+# Merge note: an explicit -log-file flag overrides this field in TUI and batch.
+# The CLI default is used only when this field is empty and no flag was passed.
 # CLI: -log-file (default when config log_file is empty: "dockerdownloader.log")
 # Default: "" (then CLI/default "dockerdownloader.log")
 log_file: ""
