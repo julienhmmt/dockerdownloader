@@ -114,9 +114,9 @@ func TestCreate_WritesAllEntries(t *testing.T) {
 func TestCreate_RebuildPreservesBundleOnFailure(t *testing.T) {
 	for _, compression := range []string{"gzip", "zstd"} {
 		t.Run(compression, func(t *testing.T) {
-			var work string = t.TempDir()
-			var out string = t.TempDir()
-			var spec Spec = Spec{Name: "rebuild", OutputDir: out, Compression: compression,
+			work := t.TempDir()
+			out := t.TempDir()
+			spec := Spec{Name: "rebuild", OutputDir: out, Compression: compression,
 				Images: []ImageEntry{{TarPath: writeTemp(t, work, "i.tar", "original"), SourceRef: "x:1", DestRef: "r/x:1", Digest: "sha256:abc"}}}
 			path, err := Create(spec)
 			require.NoError(t, err)
@@ -145,8 +145,8 @@ func TestCreate_RebuildPreservesBundleOnFailure(t *testing.T) {
 }
 
 func TestCreate_PublicationFailureCleansTemporaryArchive(t *testing.T) {
-	var out string = t.TempDir()
-	var destination string = filepath.Join(out, "images-bundle.tar.gz")
+	out := t.TempDir()
+	destination := filepath.Join(out, "images-bundle.tar.gz")
 	require.NoError(t, os.Mkdir(destination, 0o755))
 	_, err := Create(Spec{Name: "images", OutputDir: out, Images: []ImageEntry{
 		{TarPath: writeTemp(t, t.TempDir(), "i.tar", "image"), SourceRef: "x:1", DestRef: "r/x:1"},
@@ -250,11 +250,11 @@ func TestBuildLoadScript_QuotesAndCountsImages(t *testing.T) {
 	assert.Contains(t, script, `"$ENGINE" load -i "$DIR/$1"`)
 	assert.Contains(t, script, `"$ENGINE" push "$2"`)
 	assert.Contains(t, script, "2 image(s)")
-	// DRY_RUN preview support and idempotent skip-if-present.
+	// DRY_RUN preview support and unconditional load-before-push.
 	assert.Contains(t, script, `DRY_RUN="${DRY_RUN:-}"`)
 	assert.Contains(t, script, `echo "DRY_RUN: $*"`)
-	assert.Contains(t, script, `"$ENGINE" image inspect "$2"`)
-	assert.Contains(t, script, "already present, skipping load")
+	assert.NotContains(t, script, `"$ENGINE" image inspect "$2"`)
+	assert.NotContains(t, script, "already present, skipping load")
 	// Fail closed when no checksum tool is available.
 	assert.Contains(t, script, "refuse to load without integrity check")
 	assert.Contains(t, script, "exit 1")
@@ -311,6 +311,44 @@ func TestBuildLoadScript_RefusesWithoutChecksums(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	require.Error(t, err, "script must fail closed without sha256sums.txt")
 	assert.Contains(t, string(out), "missing sha256sums.txt")
+}
+
+func TestBuildLoadScript_AlwaysLoadsBeforePush(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	out := t.TempDir()
+	path, err := Create(Spec{Name: "load", OutputDir: out, Images: []ImageEntry{
+		{TarPath: writeTemp(t, t.TempDir(), "i.tar", "image"), SourceRef: "x:1", DestRef: "r/x:1"},
+	}})
+	require.NoError(t, err)
+	contents, _ := readArchive(t, path)
+	for name, content := range contents {
+		require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(out, name)), 0o755))
+		writeTemp(t, out, name, content)
+	}
+	engine := writeTemp(t, out, "engine", "#!/bin/sh\nif [ \"$1\" = image ]; then exit 0; fi\nprintf 'engine:%s\\n' \"$1\"\n")
+	require.NoError(t, os.Chmod(engine, 0o755))
+	for _, dryRun := range []string{"", "1"} {
+		t.Run("dry-run="+dryRun, func(t *testing.T) {
+			cmd := exec.Command("sh", filepath.Join(out, "load.sh"))
+			cmd.Env = append(os.Environ(), "ENGINE="+engine, "DRY_RUN="+dryRun)
+			output, err := cmd.CombinedOutput()
+			require.NoError(t, err, "%s", output)
+			text := string(output)
+			assert.NotContains(t, text, "skipping load")
+			if dryRun != "" {
+				assert.Contains(t, text, "DRY_RUN: "+engine+" load -i ")
+				assert.Contains(t, text, "DRY_RUN: "+engine+" push r/x:1")
+				assert.NotContains(t, text, "engine:")
+				return
+			}
+			load := strings.Index(text, "engine:load")
+			push := strings.Index(text, "engine:push")
+			require.GreaterOrEqual(t, load, 0)
+			assert.Greater(t, push, load)
+		})
+	}
 }
 
 func TestShellQuote_EscapesSingleQuotes(t *testing.T) {

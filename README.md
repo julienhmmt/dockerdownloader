@@ -55,8 +55,9 @@ cd /tmp/bundle && ./load.sh
 ```
 
 `load.sh` verifies every checksum, loads each image, and pushes it to the
-registry baked into its tag. It is idempotent (already-present images are
-skipped), fails closed if `sha256sums.txt` or a checksum tool is missing, and
+registry baked into its tag. It is safe to re-run: every run loads the bundled
+image before pushing, so an older local tag cannot replace the bundled content.
+It fails closed if `sha256sums.txt` or a checksum tool is missing, and
 honours:
 
 | Variable | Effect |

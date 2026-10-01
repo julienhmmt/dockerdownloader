@@ -218,8 +218,8 @@ func (s *sums) String() string {
 // tarball into a container engine and pushes it to its retagged reference. The
 // engine defaults to docker and can be overridden with the ENGINE environment
 // variable (e.g. ENGINE=podman ./load.sh). Set DRY_RUN=1 to print the load and
-// push commands without executing them. The script is idempotent: an image
-// already present locally is not re-loaded.
+// push commands without executing them. The script is idempotent: each run
+// loads the bundled image before pushing, replacing any stale local tag.
 func buildLoadScript(images []ImageEntry) string {
 	var b strings.Builder
 	b.WriteString("#!/bin/sh\n")
@@ -253,12 +253,8 @@ func buildLoadScript(images []ImageEntry) string {
 	b.WriteString("  exit 1\n")
 	b.WriteString("fi\n\n")
 	b.WriteString("load_and_push() {\n")
-	b.WriteString(`  if [ -z "$DRY_RUN" ] && "$ENGINE" image inspect "$2" >/dev/null 2>&1; then` + "\n")
-	b.WriteString(`    echo ">> $2 already present, skipping load"` + "\n")
-	b.WriteString("  else\n")
-	b.WriteString(`    echo ">> loading $1"` + "\n")
-	b.WriteString(`    run "$ENGINE" load -i "$DIR/$1"` + "\n")
-	b.WriteString("  fi\n")
+	b.WriteString(`  echo ">> loading $1"` + "\n")
+	b.WriteString(`  run "$ENGINE" load -i "$DIR/$1"` + "\n")
 	b.WriteString(`  echo ">> pushing $2"` + "\n")
 	b.WriteString(`  run "$ENGINE" push "$2"` + "\n")
 	b.WriteString("}\n\n")
