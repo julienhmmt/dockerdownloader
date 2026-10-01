@@ -111,6 +111,53 @@ func TestCreate_WritesAllEntries(t *testing.T) {
 	assert.Contains(t, contents["manifest.json"], "sha256:aaa")
 }
 
+func TestCreate_RebuildPreservesBundleOnFailure(t *testing.T) {
+	for _, compression := range []string{"gzip", "zstd"} {
+		t.Run(compression, func(t *testing.T) {
+			var work string = t.TempDir()
+			var out string = t.TempDir()
+			var spec Spec = Spec{Name: "rebuild", OutputDir: out, Compression: compression,
+				Images: []ImageEntry{{TarPath: writeTemp(t, work, "i.tar", "original"), SourceRef: "x:1", DestRef: "r/x:1", Digest: "sha256:abc"}}}
+			path, err := Create(spec)
+			require.NoError(t, err)
+			before, err := os.ReadFile(path)
+			require.NoError(t, err)
+			spec.Images[0].TarPath = filepath.Join(work, "missing.tar")
+			_, err = Create(spec)
+			require.Error(t, err)
+			after, err := os.ReadFile(path)
+			require.NoError(t, err)
+			assert.Equal(t, before, after)
+			assert.NoError(t, Verify(path))
+			files, err := os.ReadDir(out)
+			require.NoError(t, err)
+			assert.Len(t, files, 1, "failed rebuild must not leave a temporary archive")
+			spec.Images[0].TarPath = writeTemp(t, work, "i.tar", "replacement")
+			rebuilt, err := Create(spec)
+			require.NoError(t, err)
+			assert.Equal(t, path, rebuilt)
+			after, err = os.ReadFile(path)
+			require.NoError(t, err)
+			assert.NotEqual(t, before, after)
+			assert.NoError(t, Verify(path))
+		})
+	}
+}
+
+func TestCreate_PublicationFailureCleansTemporaryArchive(t *testing.T) {
+	var out string = t.TempDir()
+	var destination string = filepath.Join(out, "images-bundle.tar.gz")
+	require.NoError(t, os.Mkdir(destination, 0o755))
+	_, err := Create(Spec{Name: "images", OutputDir: out, Images: []ImageEntry{
+		{TarPath: writeTemp(t, t.TempDir(), "i.tar", "image"), SourceRef: "x:1", DestRef: "r/x:1"},
+	}})
+	require.Error(t, err)
+	files, err := os.ReadDir(out)
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	assert.True(t, files[0].IsDir())
+}
+
 func TestCreate_NoImagesRejected(t *testing.T) {
 	_, err := Create(Spec{Name: "empty", OutputDir: t.TempDir()})
 	assert.ErrorContains(t, err, "no images to bundle")

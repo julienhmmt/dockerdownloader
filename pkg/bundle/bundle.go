@@ -103,14 +103,14 @@ func Create(spec Spec) (path string, err error) {
 	}
 	outName := fmt.Sprintf("%s-bundle.tar.%s", safeBundleName(spec.Name), ext)
 	outPath := filepath.Join(spec.OutputDir, outName)
-	out, err := os.Create(outPath)
+	out, err := os.CreateTemp(spec.OutputDir, "."+outName+"-*")
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("create temporary bundle: %w", err)
 	}
 	defer func() {
 		_ = out.Close()
 		if err != nil {
-			_ = os.Remove(outPath)
+			_ = os.Remove(out.Name())
 		}
 	}()
 	compWriter, err := codec(out)
@@ -193,6 +193,9 @@ func Create(spec Spec) (path string, err error) {
 	}
 	if err = out.Close(); err != nil {
 		return "", fmt.Errorf("finalize bundle file: %w", err)
+	}
+	if err = os.Rename(out.Name(), outPath); err != nil {
+		return "", fmt.Errorf("publish bundle: %w", err)
 	}
 	return outPath, nil
 }
