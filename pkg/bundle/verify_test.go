@@ -27,6 +27,39 @@ func TestVerify_IntactBundle(t *testing.T) {
 	assert.NoError(t, Verify(path))
 }
 
+func TestVerify_ArchiveEntryTypes(t *testing.T) {
+	path, err := Create(Spec{Name: "types", OutputDir: t.TempDir(), Images: []ImageEntry{
+		{TarPath: writeTemp(t, t.TempDir(), "i.tar", "image"), SourceRef: "x:1", DestRef: "r/x:1", Digest: "sha256:abc"},
+	}})
+	require.NoError(t, err)
+	contents, _ := readArchive(t, path)
+	for _, tc := range []struct {
+		name    string
+		flag    byte
+		wantErr bool
+	}{
+		{"directory", tar.TypeDir, false},
+		{"symlink", tar.TypeSymlink, true},
+		{"hardlink", tar.TypeLink, true},
+		{"fifo", tar.TypeFifo, true},
+		{"character device", tar.TypeChar, true},
+		{"block device", tar.TypeBlock, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hdr := &tar.Header{Name: "extra", Typeflag: tc.flag, Mode: 0o755}
+			if tc.flag == tar.TypeSymlink || tc.flag == tar.TypeLink {
+				hdr.Linkname = "images/i.tar"
+			}
+			err := Verify(writeGzipTar(t, t.TempDir(), "types.tar.gz", contents, hdr))
+			if tc.wantErr {
+				assert.ErrorContains(t, err, "unsupported archive entry")
+				return
+			}
+			assert.NoError(t, err)
+		})
+	}
+}
+
 func TestVerify_MissingChecksumsFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "empty.tar.gz")
@@ -156,7 +189,7 @@ func TestVerify_RejectsMissingImageDigest(t *testing.T) {
 }
 
 // writeGzipTar writes contents as a .tar.gz under dir/name and returns the path.
-func writeGzipTar(t *testing.T, dir, name string, contents map[string]string) string {
+func writeGzipTar(t *testing.T, dir, name string, contents map[string]string, headers ...*tar.Header) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
 	f, err := os.Create(path)
@@ -172,6 +205,9 @@ func writeGzipTar(t *testing.T, dir, name string, contents map[string]string) st
 		require.NoError(t, tw.WriteHeader(hdr))
 		_, err = tw.Write([]byte(data))
 		require.NoError(t, err)
+	}
+	for _, hdr := range headers {
+		require.NoError(t, tw.WriteHeader(hdr))
 	}
 	require.NoError(t, tw.Close())
 	require.NoError(t, gw.Close())

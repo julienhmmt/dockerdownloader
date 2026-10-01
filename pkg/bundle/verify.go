@@ -106,8 +106,11 @@ func Verify(path string) error {
 		if err != nil {
 			return fmt.Errorf("read tar: %w", err)
 		}
-		if hdr.Typeflag != tar.TypeReg {
+		if hdr.Typeflag == tar.TypeDir {
 			continue
+		}
+		if hdr.Typeflag != tar.TypeReg {
+			return fmt.Errorf("unsupported archive entry %q (type %d)", hdr.Name, hdr.Typeflag)
 		}
 		name := normalizeEntryName(hdr.Name)
 		// A repack can carry both "name" and "./name"; they are the same logical
