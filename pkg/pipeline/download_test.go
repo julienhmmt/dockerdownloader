@@ -4,7 +4,9 @@ import (
 	"archive/tar"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -30,7 +33,9 @@ import (
 type fakeSaver struct {
 	failRefs  map[string]bool
 	failUntil map[string]int
-	delay     time.Duration
+	// failErr, when set, is the wrapped cause returned for refs in failRefs.
+	failErr error
+	delay   time.Duration
 
 	mu       sync.Mutex
 	inFlight int
@@ -60,6 +65,9 @@ func (f *fakeSaver) Save(_ context.Context, srcRef, _, destPath string, _ regist
 	f.mu.Unlock()
 
 	if f.failRefs[srcRef] {
+		if f.failErr != nil {
+			return "", fmt.Errorf("pull %s: %w", srcRef, f.failErr)
+		}
 		return "", fmt.Errorf("boom: %s", srcRef)
 	}
 	if n, ok := f.failUntil[srcRef]; ok && attempt <= n {
@@ -528,6 +536,34 @@ func TestDownload_GivesUpAfterRetryBudget(t *testing.T) {
 	assert.Equal(t, 2, saver.attemptCount("docker.io/dead/img:1"))
 }
 
+func TestDownload_RetriesOnlyRetryableRegistryErrors(t *testing.T) {
+	tests := []struct {
+		status   int
+		attempts int
+	}{
+		{http.StatusUnauthorized, 1},
+		{http.StatusForbidden, 1},
+		{http.StatusNotFound, 1},
+		{http.StatusRequestTimeout, 3},
+		{http.StatusTooManyRequests, 3},
+		{http.StatusBadGateway, 3},
+	}
+	for _, tt := range tests {
+		t.Run(http.StatusText(tt.status), func(t *testing.T) {
+			saver := &fakeSaver{
+				failRefs: map[string]bool{"docker.io/some/img:1": true},
+				failErr:  &transport.Error{StatusCode: tt.status},
+			}
+			pl := newTestPipeline(saver, 1) // retries 2 -> 3 attempts max
+
+			_, failures, err := pl.Download(context.Background(), Session{WorkDir: t.TempDir()}, []string{"some/img:1"}, nil, nil)
+			require.NoError(t, err)
+			require.Len(t, failures, 1)
+			assert.Equal(t, tt.attempts, saver.attemptCount("docker.io/some/img:1"))
+		})
+	}
+}
+
 func TestSaveWithRetry_StopsOnCancelledContext(t *testing.T) {
 	saver := &fakeSaver{failRefs: map[string]bool{"x:1": true}}
 	pl := newTestPipeline(saver, 1)
@@ -564,9 +600,25 @@ func TestCheckDiskSpace(t *testing.T) {
 	// An absurd threshold fails on every real filesystem (unix only, where
 	// freeBytes returns a real number; elsewhere it returns 0 and is skipped).
 	pl.cfg.MinFreeDiskMB = 1 << 40 // 1 PiB
-	if free, _ := freeBytes(t.TempDir()); free > 0 {
+	if _, err := freeBytes(t.TempDir()); err == nil {
 		assert.ErrorContains(t, pl.checkDiskSpace(t.TempDir()), "insufficient disk space")
 	}
+}
+
+func TestCheckDiskSpace_FullDiskFails(t *testing.T) {
+	orig := statFreeBytes
+	t.Cleanup(func() { statFreeBytes = orig })
+	pl := newTestPipeline(&fakeSaver{}, 1)
+	pl.cfg.MinFreeDiskMB = 1
+
+	// A genuinely full filesystem reports 0 bytes free: that must fail, not
+	// be mistaken for "unknown" and skipped.
+	statFreeBytes = func(string) (uint64, error) { return 0, nil }
+	assert.ErrorContains(t, pl.checkDiskSpace(t.TempDir()), "insufficient disk space")
+
+	// An unsupported platform or stat error still skips the check.
+	statFreeBytes = func(string) (uint64, error) { return 0, errors.New("unsupported") }
+	assert.NoError(t, pl.checkDiskSpace(t.TempDir()))
 }
 
 func TestBundle_NoImagesRejected(t *testing.T) {
