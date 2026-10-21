@@ -1,5 +1,5 @@
 # golangci-lint v2 configuration for dockerdownloader.
-# Run locally with: make go-lint  (or: golangci-lint run ./...)
+# Run locally with: make go-lint  (builds the pinned golangci-lint with go1.27.3)
 version: "2"
 
 run:

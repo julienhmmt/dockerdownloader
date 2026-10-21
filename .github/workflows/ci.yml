@@ -30,7 +30,10 @@ jobs:
           go-version-file: go.mod
       - uses: golangci/golangci-lint-action@v9.3.0
         with:
-          version: v2.13.2
+          version: v2.15.0
+          # Build from source with go.mod's Go: a prebuilt binary compiled with
+          # an older Go refuses a module targeting go1.27.3.
+          install-mode: goinstall
 
   govulncheck:
     name: govulncheck

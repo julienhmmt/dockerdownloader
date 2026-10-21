@@ -17,7 +17,7 @@ Also: `dockerdownloader verify <bundle>` and `dockerdownloader diff <a> <b>`.
 
 Images only, with **no external binary dependency at all**.
 
-Module: `github.com/julienhmmt/dockerdownloader` · Go **1.27+** · License **AGPL-3.0**
+Module: `github.com/julienhmmt/dockerdownloader` · Go **1.27.3+** · License **AGPL-3.0**
 
 ## Commands (Makefile)
 
@@ -27,7 +27,7 @@ Module: `github.com/julienhmmt/dockerdownloader` · Go **1.27+** · License **AG
 | Release build | `make build-release` | stripped + trimpath |
 | Test | `make test` | `go test ./... -count=1` |
 | Test + race | `make test-race` | **required** before done (pipeline is concurrent) |
-| Lint | `make go-lint` | golangci-lint v2.13.2+ (must be built with Go ≥ 1.27) |
+| Lint | `make go-lint` | golangci-lint v2.15.0, built from source with the module's Go (go1.27.3) |
 | Vet | `make go-vet` | |
 | Vulns | `make govulncheck` | |
 | Security suite | `make security` | vet + lint + vuln |
