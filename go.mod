@@ -1,18 +1,15 @@
 module github.com/julienhmmt/dockerdownloader
 
-go 1.27.0
-
-// go1.27.1 is the patched stable toolchain. CI resolves this directive via
-// actions/setup-go's go-version-file and runs with GOTOOLCHAIN=local, so this
-// line is what decides which stdlib govulncheck inspects. With
-// GOTOOLCHAIN=auto, the go command downloads this toolchain when the host is
-// older.
+// go1.27.3 is the minimum: earlier 1.27.x patch releases ship the crypto/x509
+// flaw GO-2026-6809, reachable through the TLS registry pulls. The go directive
+// (not a separate toolchain line) enforces it, so neither a local build nor
+// CI (actions/setup-go reads go-version-file) can compile with an older
+// stdlib. With GOTOOLCHAIN=auto, the go command downloads go1.27.3 when the
+// host is older.
 //
-// Keep in sync with the go directive: raising "go" to a language version newer
-// than the Go used to build golangci-lint makes lint fail outright
-// ("the Go language version ... is lower than the targeted Go version"), so
-// golangci-lint in CI must be v2.13.2+ (built with go1.27).
-toolchain go1.27.1
+// golangci-lint refuses a module whose go version is newer than the Go it
+// was built with, so CI builds it from source with this toolchain.
+go 1.27.3
 
 require (
 	charm.land/bubbles/v2 v2.2.1
