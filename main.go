@@ -8,6 +8,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/julienhmmt/dockerdownloader/internal/tui"
 	"github.com/julienhmmt/dockerdownloader/pkg/bundle"
@@ -28,8 +30,7 @@ func main() {
 			runDiff(os.Args[2:])
 			return
 		case "batch":
-			runBatch(os.Args[2:])
-			return
+			os.Exit(runBatch(os.Args[2:]))
 		case "version", "-version", "--version":
 			fmt.Println(version.String())
 			return
@@ -252,93 +253,134 @@ func resolveWorkDir(cfg config.Config) (config.Config, error) {
 	return cfg, nil
 }
 
+// Batch exit codes. exitPartial means a bundle was written but some images
+// failed and are missing from it, so CI must not treat the run as a success.
+const (
+	exitOK      = 0
+	exitError   = 1
+	exitUsage   = 2
+	exitPartial = 3
+)
+
 // runBatch runs the batch subcommand: `dockerdownloader batch [-config path] <images.yaml>`.
 // It downloads every image in the YAML list headlessly. Download and logging
 // flags override the config file with the same precedence as the TUI path;
-// the image list remains a positional argument.
-func runBatch(args []string) {
+// the image list remains a positional argument. It returns the process exit
+// code instead of calling os.Exit, so the deferred work-dir cleanup always runs.
+func runBatch(args []string) int {
 	fs := flag.NewFlagSet("batch", flag.ExitOnError)
 	configPath := fs.String("config", config.DefaultPath(), "path to config file")
 	values := registerDownloadFlags(fs)
 	if err := fs.Parse(args); err != nil {
-		os.Exit(2)
+		return exitUsage
 	}
 	rest := fs.Args()
 	if len(rest) != 1 {
 		fmt.Fprintln(os.Stderr, "usage: dockerdownloader batch [-config path] <images.yaml>")
-		os.Exit(2)
+		return exitUsage
 	}
 
 	cfg, err := loadConfig(fs, *configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to load config: %v\n", err)
-		os.Exit(1)
+		return exitError
 	}
 	cfg.ImagesFile = rest[0]
 	cfg = applyProxyEnv(applyDownloadFlags(cfg, *values, fs))
 	if err := bundle.ValidateCompression(cfg.Compression); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		return exitError
 	}
 	if err := config.ValidateProxy(cfg.HTTPSProxy); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		return exitError
 	}
 	cfg, err = resolveWorkDir(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		return exitError
 	}
 	// Fail fast before downloading anything: an unwritable output dir would
 	// otherwise sink the whole run at bundle time, after the pulls are done.
 	if err := config.EnsureWritableDir(cfg.OutputDir); err != nil {
 		fmt.Fprintf(os.Stderr, "error: output dir is not usable: %v\n", err)
-		os.Exit(1)
+		return exitError
 	}
 	logger := createLogger(cfg)
 
 	imgs, err := loadImages(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		return exitError
 	}
 	refs := imagelist.Refs(imgs)
 	fmt.Printf("downloading %d image(s) for %s\n", len(refs), cfg.Platform)
 
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	pl := pipeline.New(cfg, logger)
 	session, err := pl.NewSession()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		return exitError
 	}
-	defer func() {
+	removeWorkDir := func() {
 		if session.TempWorkDir {
 			_ = os.RemoveAll(session.WorkDir)
 		}
-	}()
+	}
+	defer removeWorkDir()
 
 	entries, failures, err := pl.Download(ctx, session, refs, batchProgress, nil)
+	// Read before stop(), which cancels ctx. Then restore default signal
+	// handling: Bundle ignores ctx, so a second Ctrl-C must kill the process
+	// rather than be swallowed.
+	interrupted := ctx.Err() != nil
+	stop()
+	exitOnSignalDuringBundle(removeWorkDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "batch: %v\n", err)
-		os.Exit(1)
+		return exitError
+	}
+	// An interrupted run holds only the images pulled so far; bundling them
+	// would ship a silently incomplete archive.
+	if interrupted {
+		fmt.Fprintln(os.Stderr, "batch: interrupted, no bundle written")
+		return exitError
 	}
 	for _, f := range failures {
 		fmt.Fprintf(os.Stderr, "failed: %s: %v\n", f.Ref, f.Err)
 	}
 	if len(entries) == 0 {
 		fmt.Fprintln(os.Stderr, "batch: no images downloaded")
-		os.Exit(1)
+		return exitError
 	}
 	path, err := pl.Bundle(entries)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "batch: %v\n", err)
-		os.Exit(1)
+		return exitError
 	}
 	fmt.Printf("bundle: %s\n", path)
 	if len(failures) > 0 {
-		fmt.Printf("%d image(s) failed and were skipped\n", len(failures))
+		fmt.Fprintf(os.Stderr, "batch: %d image(s) failed and are missing from the bundle\n", len(failures))
+		return exitPartial
 	}
+	return exitOK
+}
+
+// exitOnSignalDuringBundle makes Ctrl-C/SIGTERM during the bundle step, which
+// ignores ctx, stop the process at once while still removing the temporary
+// work dir; os.Exit would otherwise skip the deferred cleanup. The handler
+// lives until the process exits, which is right after the bundle step.
+func exitOnSignalDuringBundle(cleanup func()) {
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigs
+		fmt.Fprintln(os.Stderr, "batch: interrupted while bundling, no bundle written")
+		cleanup()
+		os.Exit(130)
+	}()
 }
 
 // batchProgress prints one line per finished image to stdout.

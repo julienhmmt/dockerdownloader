@@ -77,7 +77,14 @@ type model struct {
 	reviewCursor int
 	reviewOffset int // first visible index in reviewImages (windowed list)
 
-	activity    chan tea.Msg
+	activity chan tea.Msg
+	// passRefs are the refs of the current (or last) download pass, so a
+	// cancelled pass can hand them back as failures instead of dropping them.
+	passRefs []string
+	// download is the last pass started. A cancelled pass keeps writing until
+	// its Download returns, so a new pass, or removing the work dir, must wait
+	// for it. nil means no pass was ever started.
+	download    *downloadPass
 	downCurrent int
 	downTotal   int
 	// imageProgress tracks byte-level progress per in-flight image ref,
@@ -113,6 +120,23 @@ type model struct {
 	cacheSelected map[string]bool
 	cacheCursor   int
 	cacheOffset   int
+}
+
+// downloadStopping reports whether a cancelled download pass is still running.
+func (m model) downloadStopping() bool {
+	return m.download != nil && m.download.running()
+}
+
+// shutdown runs once the program has exited: it cancels in-flight work, waits
+// for the download workers to stop writing, then removes a temporary work dir.
+// Doing this after Run returns (rather than as a tea.Cmd racing tea.Quit)
+// guarantees the cleanup completes before the process exits.
+func (m model) shutdown() {
+	m.cancel()
+	if m.download != nil {
+		m.download.wait()
+	}
+	removeTempWorkDir(m.session)
 }
 
 // setStatus stores a soft status message for the next render.

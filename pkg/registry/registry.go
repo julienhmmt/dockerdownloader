@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/google/go-containerregistry/pkg/authn"
@@ -151,35 +152,57 @@ func (p *Puller) Save(ctx context.Context, srcRef, destRef, destPath string, onB
 		return "", fmt.Errorf("parse dest ref %q: %w", destRef, err)
 	}
 
-	p.logger.Debugf("saving %s to %s", destRef, destPath)
-
-	// Create the destination file ourselves so the heavy layer write can stream
-	// through a counting writer for byte-level progress.
-	file, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	// Resolve the digest before writing: it pins exactly what is bundled, so an
+	// image whose digest cannot be resolved is a failed pull, not a success with
+	// an empty digest that verify would later reject.
+	digest, err := img.Digest()
 	if err != nil {
-		return "", fmt.Errorf("cannot create file in destination directory: %w", err)
-	}
-	cw := &countingWriter{w: file, total: estimateSize(img, p.logger), onBytes: onBytes}
-	if err := tarball.Write(tag, img, cw); err != nil {
-		_ = file.Close()
-		_ = os.Remove(destPath)
-		return "", fmt.Errorf("save %s: %w", destRef, err)
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(destPath)
-		return "", fmt.Errorf("close %s: %w", destPath, err)
+		return "", fmt.Errorf("resolve digest for %s: %w", srcRef, err)
 	}
 
-	// Resolve the digest after pull so it reflects exactly what was written.
-	digest := ""
-	if d, err := img.Digest(); err != nil {
-		p.logger.Debugf("could not resolve digest for %s: %v", srcRef, err)
-	} else {
-		digest = d.String()
+	p.logger.Debugf("saving %s to %s", destRef, destPath)
+	if err := writeTarballAtomic(destPath, func(w io.Writer) error {
+		cw := &countingWriter{w: w, total: estimateSize(img, p.logger), onBytes: onBytes}
+		return tarball.Write(tag, img, cw)
+	}); err != nil {
+		return "", fmt.Errorf("save %s: %w", destRef, err)
 	}
 
 	p.logger.Infof("saved %s (%s)", destPath, digest)
-	return digest, nil
+	return digest.String(), nil
+}
+
+// writeTarballAtomic streams write into a temporary file beside destPath and
+// renames it into place only on success. A failed or cancelled pull therefore
+// never truncates or removes a tarball already at destPath (a -resume cache
+// entry, or a concurrent pass's output). The temp name does not end in .tar so
+// the cache listing never shows a half-written file.
+func writeTarballAtomic(destPath string, write func(io.Writer) error) error {
+	file, err := os.CreateTemp(filepath.Dir(destPath), "."+filepath.Base(destPath)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("cannot create file in destination directory: %w", err)
+	}
+	tmpPath := file.Name()
+	if err := write(file); err != nil {
+		_ = file.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	// CreateTemp uses 0600; keep the 0644 the tarball always had.
+	if err := file.Chmod(0o644); err != nil {
+		_ = file.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("chmod %s: %w", tmpPath, err)
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("close %s: %w", tmpPath, err)
+	}
+	if err := os.Rename(tmpPath, destPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("rename %s: %w", tmpPath, err)
+	}
+	return nil
 }
 
 // estimateSize sums an image's compressed layer sizes and config size as a

@@ -14,20 +14,18 @@ import (
 	"github.com/julienhmmt/dockerdownloader/pkg/pipeline"
 )
 
-func TestCleanupCmd_TempDirRemoved(t *testing.T) {
+func TestRemoveTempWorkDir_TempDirRemoved(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "img.tar"), []byte("x"), 0o644))
-	cmd := cleanupCmd(pipeline.Session{WorkDir: dir, TempWorkDir: true})
-	_ = cmd() // execute the tea.Cmd
+	removeTempWorkDir(pipeline.Session{WorkDir: dir, TempWorkDir: true})
 	_, err := os.Stat(dir)
 	assert.True(t, os.IsNotExist(err), "temp work dir should be removed")
 }
 
-func TestCleanupCmd_PersistentDirPreserved(t *testing.T) {
+func TestRemoveTempWorkDir_PersistentDirPreserved(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "img.tar"), []byte("x"), 0o644))
-	cmd := cleanupCmd(pipeline.Session{WorkDir: dir})
-	_ = cmd()
+	removeTempWorkDir(pipeline.Session{WorkDir: dir})
 	info, err := os.Stat(dir)
 	require.NoError(t, err)
 	assert.True(t, info.IsDir(), "persistent work dir should be preserved")
@@ -35,10 +33,34 @@ func TestCleanupCmd_PersistentDirPreserved(t *testing.T) {
 	assert.NoError(t, err, "contents of persistent work dir should be preserved")
 }
 
-func TestCleanupCmd_EmptyDirNoop(t *testing.T) {
-	cmd := cleanupCmd(pipeline.Session{})
-	msg := cmd()
-	assert.Nil(t, msg)
+func TestRemoveTempWorkDir_EmptySessionNoop(_ *testing.T) {
+	removeTempWorkDir(pipeline.Session{})
+}
+
+func TestShutdown_WaitsForDownloadBeforeRemovingWorkDir(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	pass := newDownloadPass()
+	require.True(t, pass.start(), "the pass's command started")
+	m := model{
+		ctx: ctx, cancel: cancel, download: pass,
+		session: pipeline.Session{WorkDir: dir, TempWorkDir: true},
+	}
+	// Stand-in for a download worker: it stops only once cancelled, and checks
+	// the work dir still exists at that moment.
+	dirSeen := make(chan bool, 1)
+	go func() {
+		<-ctx.Done()
+		_, err := os.Stat(dir)
+		dirSeen <- err == nil
+		close(pass.done)
+	}()
+
+	m.shutdown()
+
+	assert.True(t, <-dirSeen, "work dir must outlive the in-flight download")
+	_, err := os.Stat(dir)
+	assert.True(t, os.IsNotExist(err), "temp work dir must be removed once the download stopped")
 }
 
 func TestSendOrCancel_ReturnsWhenContextCancelled(t *testing.T) {
@@ -69,4 +91,26 @@ func TestSendOrCancel_DeliversWhenDrained(t *testing.T) {
 	default:
 		t.Fatal("message was not delivered")
 	}
+}
+
+func TestShutdown_DoesNotHangWhenPassCommandNeverRan(t *testing.T) {
+	m := newTestModel()
+	m.session = pipeline.Session{WorkDir: t.TempDir(), TempWorkDir: true}
+	// Enter queues the download command; quitting before Bubble Tea runs it
+	// means its goroutine never starts and never closes done.
+	got, cmd := m.startDownloadPass([]string{"x:1"})
+	require.NotNil(t, cmd)
+	queued := got.(model)
+
+	finished := make(chan struct{})
+	go func() {
+		queued.shutdown()
+		close(finished)
+	}()
+	select {
+	case <-finished:
+	case <-time.After(2 * time.Second):
+		t.Fatal("shutdown hung waiting on a pass whose command never ran")
+	}
+	assert.False(t, queued.download.start(), "a pass claimed by shutdown must not start afterwards")
 }
