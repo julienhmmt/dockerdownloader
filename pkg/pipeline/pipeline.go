@@ -7,8 +7,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -16,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/julienhmmt/dockerdownloader/pkg/bundle"
@@ -239,6 +242,9 @@ func (p *Pipeline) Bundle(entries []bundle.ImageEntry) (string, error) {
 	return bundlePath, nil
 }
 
+// statFreeBytes is freeBytes, swappable so tests can simulate a full disk.
+var statFreeBytes = freeBytes
+
 // checkDiskSpace fails fast when the filesystem backing dir has less free space
 // than the configured minimum, so a long download does not abort mid-way with a
 // cryptic "no space left" error. A 0 threshold, an unsupported platform, or a
@@ -247,12 +253,9 @@ func (p *Pipeline) checkDiskSpace(dir string) error {
 	if p.cfg.MinFreeDiskMB <= 0 {
 		return nil
 	}
-	free, err := freeBytes(dir)
+	free, err := statFreeBytes(dir)
 	if err != nil {
 		p.logger.Debugf("disk space check skipped: %v", err)
-		return nil
-	}
-	if free == 0 {
 		return nil
 	}
 	const mib = 1 << 20
@@ -302,6 +305,10 @@ func (p *Pipeline) saveWithRetry(ctx context.Context, srcRef, destRef, tarPath s
 		if ctx.Err() != nil || attempt == attempts {
 			break
 		}
+		if permanentPullError(err) {
+			p.logger.Debugf("not retrying %s: %v", srcRef, err)
+			break
+		}
 		p.logger.Debugf("retry %d/%d for %s after %s: %v", attempt, attempts-1, srcRef, delay, err)
 		select {
 		case <-ctx.Done():
@@ -311,6 +318,19 @@ func (p *Pipeline) saveWithRetry(ctx context.Context, srcRef, destRef, tarPath s
 		delay *= 2
 	}
 	return "", err
+}
+
+// permanentPullError reports whether err is a registry 4xx response that no
+// retry can fix (bad credentials, missing repo or tag). Timeouts (408), rate
+// limits (429), 5xx and plain network errors stay retryable.
+func permanentPullError(err error) bool {
+	var regErr *transport.Error
+	if !errors.As(err, &regErr) {
+		return false
+	}
+	code := regErr.StatusCode
+	return code >= 400 && code < 500 &&
+		code != http.StatusRequestTimeout && code != http.StatusTooManyRequests
 }
 
 // digestSidecarPath returns the path of the file recording a tarball's
