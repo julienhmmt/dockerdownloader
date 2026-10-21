@@ -103,7 +103,7 @@ func (m model) updateComponents(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "ctrl+c" {
 		m.cancel()
-		return m, tea.Batch(cleanupCmd(m.session), tea.Quit)
+		return m, tea.Quit
 	}
 	// Global theme menu — ctrl+t so it works even while typing in the
 	// add-image field and never collides with single-letter bindings.
@@ -188,6 +188,10 @@ func (m model) handleBusyKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.activity = make(chan tea.Msg, 16)
 		m.imageProgress = map[string]imageProgress{}
 		m.errStep = ""
+		// The cancelled pass's results are dropped, so hand its refs back as
+		// failures: otherwise they vanish and 'c' bundles without them.
+		m.failures = cancelledFailures(m.passRefs)
+		m.failCursor, m.failOffset = 0, 0
 		if len(m.entries) > 0 {
 			m.state = stateDownloadReview
 		} else {
@@ -206,7 +210,7 @@ func (m model) handleReviewKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.cancel()
-		return m, tea.Batch(cleanupCmd(m.session), tea.Quit)
+		return m, tea.Quit
 	case "up", "k":
 		if m.reviewCursor > 0 {
 			m.reviewCursor--
@@ -270,6 +274,10 @@ func (m model) handleReviewKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.setStatus("Select at least one image (space), or press a to add one.")
 			return m, nil
 		}
+		if m.downloadStopping() {
+			m.setStatus(stillStoppingStatus)
+			return m, nil
+		}
 		m.clearStatus()
 		session, err := m.startSession()
 		if err != nil {
@@ -279,15 +287,27 @@ func (m model) handleReviewKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.session = session
-		refs := selectedRefs(m.reviewImages)
-		m.entries, m.failures = nil, nil
-		m.imageProgress = map[string]imageProgress{}
-		m.state = stateDownloading
-		m.downCurrent, m.downTotal = 0, len(refs)
-		return m, tea.Batch(m.spinner.Tick, downloadCmd(m.ctx, m.pipeline, m.session, refs, m.activity))
+		m.entries = nil
+		return m.startDownloadPass(selectedRefs(m.reviewImages))
 	}
 	m.ensureReviewCursorVisible()
 	return m, nil
+}
+
+// stillStoppingStatus is shown when the user starts a pass while a cancelled
+// one is still writing into the same work dir.
+const stillStoppingStatus = "Still stopping the cancelled download, try again in a moment."
+
+// startDownloadPass switches to the downloading screen and pulls refs.
+func (m model) startDownloadPass(refs []string) (tea.Model, tea.Cmd) {
+	m.passRefs = refs
+	m.download = newDownloadPass()
+	m.failures = nil
+	m.failCursor, m.failOffset = 0, 0
+	m.imageProgress = map[string]imageProgress{}
+	m.state = stateDownloading
+	m.downCurrent, m.downTotal = 0, len(refs)
+	return m, tea.Batch(m.spinner.Tick, downloadCmd(m.ctx, m.pipeline, m.session, refs, m.activity, m.download))
 }
 
 // startSession returns the run's work directory, creating it on the first
@@ -324,14 +344,18 @@ func (m model) handleDownloadReviewKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
 			m.failCursor = n - 1
 		}
 	case "r":
-		refs := failureRefs(m.failures)
-		m.failures = nil
-		m.failCursor, m.failOffset = 0, 0
-		m.imageProgress = map[string]imageProgress{}
-		m.state = stateDownloading
+		// An empty retry would finish with no failures and jump straight to
+		// bundling, which the user did not ask for.
+		if len(m.failures) == 0 {
+			return m, nil
+		}
+		if m.downloadStopping() {
+			m.setStatus(stillStoppingStatus)
+			return m, nil
+		}
+		m.clearStatus()
 		m.errStep = "download"
-		m.downCurrent, m.downTotal = 0, len(refs)
-		return m, tea.Batch(m.spinner.Tick, downloadCmd(m.ctx, m.pipeline, m.session, refs, m.activity))
+		return m.startDownloadPass(failureRefs(m.failures))
 	case "c":
 		if len(m.entries) == 0 {
 			return m, nil
@@ -341,7 +365,7 @@ func (m model) handleDownloadReviewKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
 		return m, tea.Batch(m.spinner.Tick, bundleCmd(m.pipeline, m.entries))
 	case "q", "esc":
 		m.cancel()
-		return m, tea.Batch(cleanupCmd(m.session), tea.Quit)
+		return m, tea.Quit
 	}
 	m.ensureFailCursorVisible()
 	return m, nil
@@ -538,7 +562,7 @@ func (m model) handleEndKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "esc", "enter":
 		m.cancel()
-		return m, tea.Batch(cleanupCmd(m.session), tea.Quit)
+		return m, tea.Quit
 	}
 	return m, nil
 }
@@ -561,6 +585,15 @@ func failureRefs(failures []pipeline.ImageFailure) []string {
 		refs = append(refs, f.Ref)
 	}
 	return refs
+}
+
+// cancelledFailures marks every ref of a cancelled pass as failed.
+func cancelledFailures(refs []string) []pipeline.ImageFailure {
+	failures := make([]pipeline.ImageFailure, 0, len(refs))
+	for _, ref := range refs {
+		failures = append(failures, pipeline.ImageFailure{Ref: ref, Err: context.Canceled})
+	}
+	return failures
 }
 
 // countSelected returns the number of selected images.

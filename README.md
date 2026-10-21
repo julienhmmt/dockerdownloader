@@ -123,6 +123,10 @@ dockerdownloader batch -output archives -work-dir ./cache -resume -platform linu
 
 Run `dockerdownloader -h` or `dockerdownloader batch -h` for the full flag list.
 
+`batch` exit codes: `0` every image is in the bundle; `1` error or
+interrupted, no bundle written; `2` usage error; `3` a bundle was written but
+some images failed and are missing from it (listed on stderr).
+
 ## TUI keys
 
 | Screen | Keys |

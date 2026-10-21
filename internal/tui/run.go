@@ -18,6 +18,9 @@ func Run(cfg config.Config, logger *log.Logger, imgs []imagelist.Image, notice s
 		m.setStatus(notice)
 	}
 	program := tea.NewProgram(m)
-	_, err := program.Run()
+	final, err := program.Run()
+	if fm, ok := final.(model); ok {
+		fm.shutdown()
+	}
 	return err
 }

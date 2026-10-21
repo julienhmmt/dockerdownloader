@@ -359,11 +359,13 @@ func fileSHA256(path string) (string, error) {
 // writeResumeSidecars records the registry manifest digest, the settings that
 // shaped the tarball, and a content hash for later -resume runs. Failure is
 // non-fatal: the tarball is still valid; resume just will not reuse it without
-// every sidecar present and matching.
+// every sidecar present and matching. Sidecars from a previous pull are removed
+// first, so a failed write can never leave a stale digest beside fresh ones.
 func writeResumeSidecars(tarPath, registryDigest string, meta resumeMeta) {
-	if registryDigest != "" {
-		_ = os.WriteFile(digestSidecarPath(tarPath), []byte(registryDigest), 0o600)
+	for _, sidecar := range []string{digestSidecarPath(tarPath), metaSidecarPath(tarPath), contentHashSidecarPath(tarPath)} {
+		_ = os.Remove(sidecar)
 	}
+	_ = os.WriteFile(digestSidecarPath(tarPath), []byte(registryDigest), 0o600)
 	if data, err := json.Marshal(meta); err == nil {
 		_ = os.WriteFile(metaSidecarPath(tarPath), data, 0o600)
 	}
@@ -421,8 +423,10 @@ func (p *Pipeline) reusableTarball(tarPath string, want resumeMeta) (string, boo
 		return "", false
 	}
 	digest := strings.TrimSpace(string(data))
-	if digest == "" {
-		p.logger.Debugf("resume: %s has empty digest sidecar, re-pulling", tarPath)
+	// The digest is written verbatim into load.sh, so anything but a plain
+	// sha256 digest (e.g. a tampered sidecar with a newline) is re-pulled.
+	if !validDigest.MatchString(digest) {
+		p.logger.Debugf("resume: %s has an invalid digest sidecar, re-pulling", tarPath)
 		return "", false
 	}
 	wantContent, err := os.ReadFile(contentHashSidecarPath(tarPath))
@@ -470,6 +474,9 @@ func tarballComplete(tarPath string) bool {
 }
 
 var unsafeChars = regexp.MustCompile(`[^a-zA-Z0-9_.-]+`)
+
+// validDigest matches a registry manifest digest as recorded in a sidecar.
+var validDigest = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 
 // tarballName derives a filesystem-safe tar filename from an image reference.
 // A short hash of the original ref is appended so two distinct refs that

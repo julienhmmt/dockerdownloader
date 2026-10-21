@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -387,4 +388,65 @@ func TestStartSession_ReusesExistingSession(t *testing.T) {
 	second, err := m.startSession()
 	require.NoError(t, err)
 	assert.Equal(t, first.WorkDir, second.WorkDir)
+}
+
+// downloadReviewModel is a post-download screen with one image in hand and
+// one failure, the state from which the user retries.
+func downloadReviewModel() model {
+	m := newTestModel()
+	m.state = stateDownloadReview
+	m.entries = []bundle.ImageEntry{{SourceRef: "ok:1"}}
+	m.failures = []pipeline.ImageFailure{{Ref: "bad:1", Err: errors.New("429")}}
+	return m
+}
+
+func TestRetry_CancelledPassKeepsFailures(t *testing.T) {
+	m := downloadReviewModel()
+	got, cmd := m.handleKey(keyPress("r"))
+	require.NotNil(t, cmd)
+	retrying := got.(model)
+	require.Equal(t, stateDownloading, retrying.state)
+
+	got, _ = retrying.handleKey(keyPress("esc"))
+	m2 := got.(model)
+
+	assert.Equal(t, stateDownloadReview, m2.state)
+	require.Len(t, m2.failures, 1, "a cancelled retry must not silently drop the images it was retrying")
+	assert.Equal(t, "bad:1", m2.failures[0].Ref)
+	assert.ErrorIs(t, m2.failures[0].Err, context.Canceled)
+}
+
+func TestRetry_NoFailuresIsNoop(t *testing.T) {
+	m := downloadReviewModel()
+	m.failures = nil
+	got, cmd := m.handleKey(keyPress("r"))
+	assert.Equal(t, stateDownloadReview, got.(model).state, "an empty retry must not jump to bundling")
+	assert.Nil(t, cmd)
+}
+
+func TestRetry_RefusedWhileCancelledPassStillRunning(t *testing.T) {
+	m := downloadReviewModel()
+	m.download = newDownloadPass() // the cancelled pass has not returned yet
+	got, cmd := m.handleKey(keyPress("r"))
+	m2 := got.(model)
+	assert.Equal(t, stateDownloadReview, m2.state)
+	assert.Equal(t, stillStoppingStatus, m2.status)
+	assert.Nil(t, cmd)
+}
+
+func TestEnter_RefusedWhileCancelledPassStillRunning(t *testing.T) {
+	m := newTestModel()
+	m.state = stateReview
+	m.cfg.WorkDir = t.TempDir()
+	m.download = newDownloadPass()
+	got, cmd := m.handleReviewKey(keyPress("enter"))
+	m2 := got.(model)
+	assert.Equal(t, stateReview, m2.state)
+	assert.Equal(t, stillStoppingStatus, m2.status)
+	assert.Nil(t, cmd)
+
+	close(m.download.done)
+	got, cmd = m2.handleReviewKey(keyPress("enter"))
+	assert.Equal(t, stateDownloading, got.(model).state, "a new pass starts once the cancelled one returned")
+	assert.NotNil(t, cmd)
 }
