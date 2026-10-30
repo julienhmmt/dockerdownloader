@@ -1,4 +1,4 @@
-.PHONY: default help build build-release test test-race coverage go-lint go-vet govulncheck security go-update go-clean install
+.PHONY: default help build build-release test test-race coverage go-lint go-vet govulncheck security go-update go-clean install sonar sonar-up sonar-down sonar-scan sonar-query
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 GOLANGCI_LINT_VERSION ?= v2.15.0
@@ -20,6 +20,8 @@ help:
 	@echo "  go-update      Update Go module dependencies"
 	@echo "  go-clean       Remove build artifacts and caches"
 	@echo "  install        Install the binary to \$$GOPATH/bin"
+	@echo "  sonar          Coverage + scan into the shared SonarQube"
+	@echo "  sonar-query    Query SonarQube (CMD=\"summary\")"
 
 build:
 	go build -ldflags "$(LDFLAGS_VERSION)" -o dockerdownloader .
@@ -59,3 +61,21 @@ go-clean:
 
 install:
 	go install .
+
+# SonarQube (shared local server, see $(SONAR_HOME)/README.md)
+SONAR_HOME ?= $(HOME)/git/gh/sonarqube
+
+sonar: sonar-scan
+
+sonar-up:
+	@$(MAKE) -C $(SONAR_HOME) up
+
+sonar-down:
+	@$(MAKE) -C $(SONAR_HOME) down
+
+sonar-scan:
+	@tools/sonar-coverage.sh
+	@$(SONAR_HOME)/scan.sh
+
+sonar-query:
+	@python3 $(SONAR_HOME)/query.py $(CMD)
